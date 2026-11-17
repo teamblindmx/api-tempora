@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL_OWNER: postgresql://tempora_owner:owner@localhost:5432/tempora
+      DATABASE_URL: postgresql://tempora_app:app@localhost:5432/tempora
+      DATABASE_URL_AUTH: postgresql://tempora_auth:auth@localhost:5432/tempora?options=-c%20search_path%3Dauth
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Formato
+        run: npm run format:check
+      - name: Lint
+        run: npm run lint
+      - name: Tipos
+        run: npm run typecheck
+      - name: Pruebas unitarias
+        run: npm test
+      - name: Compilación
+        run: npm run build
+      - name: Roles y base de PostgreSQL
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/postgres/01-roles.sql
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/postgres/02-database.sql
+      - name: Pruebas de aislamiento (PostgreSQL real)
+        run: npm run test:e2e

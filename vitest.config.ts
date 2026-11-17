@@ -1,13 +1,9 @@
 import { defineConfig } from 'vitest/config';
-import tsconfigPaths from 'vite-tsconfig-paths';
 
+// Pruebas unitarias: sin base de datos. Vite 8 (Oxc) emite los metadatos de decoradores que Nest
+// necesita (respeta emitDecoratorMetadata del tsconfig); no hace falta SWC.
 export default defineConfig({
-  // Resolves the path aliases declared in tsconfig.json, including the ones
-  // added by `nest g library`.
-  plugins: [tsconfigPaths()],
   test: {
-    globals: true,
-    root: './',
-    include: ['**/*.spec.ts'],
+    include: ['src/**/*.spec.ts'],
   },
 });
