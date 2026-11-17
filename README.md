@@ -1,124 +1,101 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Tempora API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API de Tempora, el registro electrónico de jornada laboral (Ley Federal del Trabajo, obligatorio desde
+el 1 de enero de 2027). NestJS 12 sobre Express 5, PostgreSQL 16, Prisma 7, Better Auth y Axeda.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Levantarlo en local
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+Requisitos: Node 22.12 o más y Docker (o un PostgreSQL 16/18 propio).
 
 ```bash
-$ npm install
+docker compose up -d          # PostgreSQL con los roles y la base "tempora"
+cp .env.example .env          # y pon un BETTER_AUTH_SECRET: openssl rand -base64 48
+npm install                   # también genera el cliente de Prisma
+npm run db:migrate            # migraciones de Prisma (app) y de Better Auth/Axeda (auth)
+npm run start:dev
 ```
 
-## Compile and run the project
+- API: <http://localhost:3000> · documentación OpenAPI: <http://localhost:3000/docs>
+- Autenticación (Better Auth y endpoints de Axeda): `/api/auth/...`
+- Los correos de verificación se imprimen en la consola en desarrollo.
+- Primer dueño de la plataforma: regístrate y luego `npm run bootstrap:admin -- tu@correo.com`.
 
-```bash
-# development
-$ npm run start
+Sin Docker: corre `docker/postgres/01-roles.sql` y `02-database.sql` con `psql` como superusuario.
 
-# watch mode
-$ npm run start:dev
+## Comandos
 
-# production mode
-$ npm run start:prod
+| Comando                                                 | Qué hace                                                                      |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `npm run start:dev`                                     | API con recarga                                                               |
+| `npm run build` / `npm run start:prod`                  | Compila a `dist/` y la corre                                                  |
+| `npm test`                                              | Pruebas unitarias (sin base de datos)                                         |
+| `npm run test:e2e`                                      | Pruebas contra PostgreSQL real: crea una base temporal y la borra al terminar |
+| `npm run lint` / `npm run typecheck` / `npm run format` | oxlint, tipos y Prettier                                                      |
+| `npm run db:migrate:dev -- --name x --create-only`      | Nueva migración de Prisma                                                     |
+| `npm run db:migrate`                                    | Aplica migraciones de app y auth                                              |
+
+## Cómo está armado
+
+```
+src/
+  config/            Variables de entorno validadas con Zod. Si falta una, no arranca.
+  auth/              Better Auth + Axeda, catálogo de permisos y roles, PermissionGuard.
+  database/          Prisma 7 y TenantDb (transacción con la compañía de la petición para RLS).
+  tenancy/           Contexto por petición (nestjs-cls): quién y en qué compañía.
+  modules/
+    sites/           Sedes de Tempora: ubicación y radio.
+    employees/       Perfiles de recursos humanos.
+    audit/           Auditoría de solo inserción.
+    attendance/      Jornada. rules/ son funciones puras, sin Nest ni base de datos.
+prisma/              Esquema y migraciones (las de RLS se escriben a mano).
+docker/postgres/     Roles y base para desarrollo y CI.
+test/                Pruebas de aislamiento contra PostgreSQL.
+docs/adr/            Decisiones (0009: NestJS sobre Express).
 ```
 
-## Run tests
+Compañías, negocios y usuarios viven en Axeda (esquema `auth`); el frontend los administra con los
+endpoints de Axeda. Tempora guarda sus identificadores como texto, sin claves foráneas entre esquemas.
 
-```bash
-# unit tests
-$ npm run test
+### Base de datos: tres roles
 
-# e2e tests
-$ npm run test:e2e
+| Rol             | Para qué                                                            |
+| --------------- | ------------------------------------------------------------------- |
+| `tempora_owner` | Dueño del esquema `app`. Solo migraciones de Prisma.                |
+| `tempora_app`   | El que usa la API para `app`. No es dueño de nada y no salta RLS.   |
+| `tempora_auth`  | Dueño del esquema `auth` (Better Auth y Axeda). Sin acceso a `app`. |
 
-# test coverage
-$ npm run test:cov
-```
+### Aislamiento por compañía (dos capas)
 
-## Deployment
+1. **RLS de PostgreSQL** en cada tabla de `app`: `ENABLE` y `FORCE`, con una política `USING` y
+   `WITH CHECK` sobre `company_id = app.current_company_id()`. Sin compañía fijada no se ve ni se
+   escribe nada.
+2. **Repositorios** que también filtran por `companyId`. Los controladores nunca usan Prisma.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+La compañía sale de la ruta (`/companies/:companyId/...`), la valida `PermissionGuard` con Axeda y se
+guarda en el contexto de la petición. `TenantDb.run(tx => ...)` abre una transacción con
+`set_config('app.company_id', ..., true)`, que vale solo para esa transacción.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+**Al agregar una tabla** en `app`: columna `company_id`, `ENABLE` + `FORCE ROW LEVEL SECURITY`, política
+y `GRANT` a `tempora_app` en la migración, y FK compuestas `(id, company_id)` si referencia otra tabla
+de negocio (las FK no pasan por RLS). La prueba de catálogo en `test/rls.e2e-spec.ts` falla si falta algo.
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+### Permisos y roles
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+El código decide siempre por permiso, nunca por el nombre de un rol (`src/auth/permissions.ts`).
+Cada ruta declara `@RequirePermission(permiso, { company: 'companyId' })` o `@Public()`; lo demás se
+niega. Roles: administrador de compañía, administrador de negocio, líder, trabajador y encargado. El
+dueño de la plataforma es el administrador global de Axeda y **no** recibe permisos de datos de clientes
+(asistencia, empleados, auditoría): esos solo cuentan si se conceden en la compañía o el negocio.
 
-## Observability
+### Cookies
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+Better Auth usa cookies `HttpOnly` y `SameSite=Lax`, así que frontend y API deben estar en el mismo
+sitio (por ejemplo `app.tempora.mx` y `api.tempora.mx`). En producción: `COOKIE_DOMAIN=tempora.mx`,
+el origen del frontend en `TRUSTED_ORIGINS` y `BETTER_AUTH_URL` con https. Las escrituras con cookie
+desde un origen que no está en la lista reciben 403.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Pendiente (depende de Axeda)
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
-
-```bash
-$ npm install @nestjs/observe
-```
-
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Sedes como alcance de Axeda (alpha.2): enlazar `site.axeda_site_id`, permisos y pruebas de 403 por sede.
+- Registro por teléfono (alpha.3).
+- Que el líder pueda invitar a su sede sin poder otorgar el rol de líder (pregunta abierta al equipo de Axeda).

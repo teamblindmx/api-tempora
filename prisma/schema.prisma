@@ -1,13 +1,81 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Tablas de Tempora (esquema app). Las compañías, negocios, sedes (alpha.2) y usuarios viven en Axeda,
+// esquema auth: aquí se guardan sus identificadores como texto, sin claves foráneas entre esquemas
+// (ADR 0006, ADR 0007).
+//
+// Toda tabla de negocio lleva company_id y una política RLS (se escribe a mano en la migración: Prisma
+// no modela políticas). La prueba test/rls.e2e-spec.ts falla si una tabla no la tiene.
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider            = "prisma-client"
+  output              = "../generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
 }
 
 datasource db {
   provider = "postgresql"
+  schemas  = ["app"]
+}
+
+/// Datos de Tempora de una sede: ubicación y radio para validar el marcado.
+/// axedaSiteId se llena cuando Axeda publique las sedes (alpha.2).
+model Site {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @map("company_id")
+  businessId  String?  @map("business_id")
+  axedaSiteId String?  @unique @map("axeda_site_id")
+  name        String
+  latitude    Decimal  @db.Decimal(9, 6)
+  longitude   Decimal  @db.Decimal(9, 6)
+  radiusM     Int      @default(500) @map("radius_m")
+  timezone    String   @default("America/Mexico_City")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  employees EmployeeProfile[]
+
+  @@unique([id, companyId])
+  @@index([companyId])
+  @@map("site")
+  @@schema("app")
+}
+
+/// Datos de recursos humanos de un empleado. El empleado es un usuario de Axeda (userId).
+model EmployeeProfile {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @map("company_id")
+  userId     String   @map("user_id")
+  siteId     String?  @map("site_id") @db.Uuid
+  department String?
+  position   String?
+  photoUrl   String?  @map("photo_url")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // FK compuesta: un perfil nunca apunta a una sede de otra compañía (las FK no pasan por RLS).
+  site Site? @relation(fields: [siteId, companyId], references: [id, companyId])
+
+  @@unique([companyId, userId])
+  @@index([companyId])
+  @@map("employee_profile")
+  @@schema("app")
+}
+
+/// Auditoría de solo inserción: el rol de la API no tiene UPDATE ni DELETE, y un trigger lo impide
+/// también al dueño.
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  companyId   String   @map("company_id")
+  actorUserId String?  @map("actor_user_id")
+  action      String
+  targetType  String   @map("target_type")
+  targetId    String?  @map("target_id")
+  before      Json?
+  after       Json?
+  reason      String?
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  @@index([companyId, occurredAt])
+  @@map("audit_log")
+  @@schema("app")
 }
