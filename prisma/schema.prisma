@@ -28,10 +28,16 @@ model Site {
   longitude  Decimal  @db.Decimal(9, 6)
   radiusM    Int      @default(500) @map("radius_m")
   timezone   String   @default("America/Mexico_City")
+  /// Horario oficial de la sede, "HH:MM" en su zona horaria. Null mientras no se defina
+  /// (pregunta abierta 4 del PRD): sin cierre, la salida no se clasifica por horario.
+  shiftStart String?  @map("shift_start")
+  shiftEnd   String?  @map("shift_end")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  employees EmployeeProfile[]
+  employees  EmployeeProfile[]
+  dailyCodes DailyCode[]
+  attendance AttendanceRecord[]
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -76,5 +82,69 @@ model AuditLog {
 
   @@index([companyId, occurredAt])
   @@map("audit_log")
+  @@schema("app")
+}
+
+/// Código diario de una sede (regla 2): lo genera el líder y dura de 20 a 30 minutos. Al generar uno
+/// nuevo, el anterior vence. Se conserva para saber con qué código marcó cada quien.
+model DailyCode {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @map("company_id")
+  siteId    String   @map("site_id")
+  code      String
+  createdBy String   @map("created_by")
+  createdAt DateTime @map("created_at") @db.Timestamptz(3)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  site       Site               @relation(fields: [siteId, companyId], references: [id, companyId])
+  attendance AttendanceRecord[]
+
+  @@unique([id, companyId])
+  @@index([companyId, siteId, expiresAt])
+  @@map("daily_code")
+  @@schema("app")
+}
+
+/// Una jornada de un trabajador: su entrada y su salida. La hora la pone el servidor (regla 1).
+/// Una por trabajador y día de jornada (fecha local de la sede al entrar). No se borra: la API no
+/// tiene DELETE sobre esta tabla, y las correcciones (semana 3) se auditan.
+model AttendanceRecord {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @map("company_id")
+  siteId    String   @map("site_id")
+  /// Usuario de Axeda.
+  userId    String   @map("user_id")
+  workDate  DateTime @map("work_date") @db.Date
+
+  checkInAt        DateTime @map("check_in_at") @db.Timestamptz(3)
+  checkInLatitude  Decimal? @map("check_in_latitude") @db.Decimal(9, 6)
+  checkInLongitude Decimal? @map("check_in_longitude") @db.Decimal(9, 6)
+  checkInAccuracyM Int?     @map("check_in_accuracy_m")
+  /// Distancia real a la sede (regla 4), para afinar el radio. Null si no hubo ubicación.
+  checkInDistanceM Int?     @map("check_in_distance_m")
+  dailyCodeId      String   @map("daily_code_id") @db.Uuid
+
+  checkOutAt        DateTime? @map("check_out_at") @db.Timestamptz(3)
+  checkOutLatitude  Decimal?  @map("check_out_latitude") @db.Decimal(9, 6)
+  checkOutLongitude Decimal?  @map("check_out_longitude") @db.Decimal(9, 6)
+  checkOutAccuracyM Int?      @map("check_out_accuracy_m")
+  checkOutDistanceM Int?      @map("check_out_distance_m")
+  /// "regular" o "early" (regla 6).
+  checkOutKind      String?   @map("check_out_kind")
+  /// Motivo de una salida anticipada (obligatorio en ese caso).
+  checkOutReason    String?   @map("check_out_reason")
+
+  /// Motivos de "por revisar" (ver rules/marking.ts). Vacío: no hay nada que revisar.
+  reviewReasons String[] @default([]) @map("review_reasons")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // FK compuestas: una jornada nunca apunta a una sede o a un código de otra compañía.
+  site      Site      @relation(fields: [siteId, companyId], references: [id, companyId])
+  dailyCode DailyCode @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
+
+  @@unique([companyId, userId, workDate])
+  @@index([companyId, siteId, workDate])
+  @@map("attendance_record")
   @@schema("app")
 }

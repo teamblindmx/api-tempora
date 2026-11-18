@@ -41,6 +41,36 @@ describe('loadConfig', () => {
     ).toThrow(/SMS_PROVIDER/);
   });
 
+  describe('Twilio', () => {
+    const twilio = {
+      ...valid,
+      SMS_PROVIDER: 'twilio',
+      TWILIO_ACCOUNT_SID: 'AC' + 'a'.repeat(32),
+      TWILIO_AUTH_TOKEN: 'b'.repeat(32),
+      TWILIO_FROM: '+15005550006',
+    };
+
+    it('acepta credenciales completas y sirve en producción', () => {
+      const c = loadConfig({ ...twilio, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' });
+      expect(c.SMS_PROVIDER).toBe('twilio');
+      expect(c.TWILIO_API_KEY_SID).toBeUndefined();
+    });
+
+    it('acepta un Messaging Service en lugar de número remitente', () => {
+      expect(() =>
+        loadConfig({ ...twilio, TWILIO_FROM: '', TWILIO_MESSAGING_SERVICE_SID: 'MG' + 'c'.repeat(32) }),
+      ).not.toThrow();
+    });
+
+    it.each(['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM'])('falla si falta %s', (key) => {
+      expect(() => loadConfig({ ...twilio, [key]: '' })).toThrow(key);
+    });
+
+    it('rechaza un SID con formato incorrecto', () => {
+      expect(() => loadConfig({ ...twilio, TWILIO_ACCOUNT_SID: 'AC123' })).toThrow(/TWILIO_ACCOUNT_SID/);
+    });
+  });
+
   it('la URL del frontend sale de APP_URL o del primer origen de confianza', () => {
     expect(appUrl(loadConfig(valid))).toBe('http://localhost:5173');
     expect(appUrl(loadConfig({ ...valid, APP_URL: 'https://app.tempora.mx' }))).toBe(
