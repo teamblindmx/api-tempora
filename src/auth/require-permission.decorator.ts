@@ -7,7 +7,7 @@ export interface PermissionRequirement {
    * Parámetro de la ruta con el alcance. Sin él, el permiso se comprueba en global.
    * La compañía de un negocio se lee de la base de datos, nunca de la petición.
    */
-  scope?: { company: string } | { business: string };
+  scope?: { company: string } | { business: string } | { site: string };
 }
 
 export const PERMISSION_KEY = 'tempora:permission';

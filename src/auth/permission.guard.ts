@@ -26,8 +26,17 @@ import { TENANT_DATA_PERMISSIONS } from './permissions.js';
  * 3. Alcance: el id de la ruta se resuelve leyendo la base de Axeda (404 si no existe, igual que 403).
  * 4. Permiso con Axeda en ese alcance (403). Los permisos de datos de clientes no cuentan si solo
  *    vienen de un alcance global (el dueño de la plataforma no ve nómina).
+ *    Alcances: compañía, negocio o sede; una asignación de compañía vale en sus negocios y sedes.
  * 5. Guarda quién y en qué compañía en el contexto de la petición; de ahí sale la compañía de RLS.
  */
+/** ¿Viene la concesión de la compañía, el negocio o la sede de `target` (no de global)? */
+export function grantsFromTenant(s: AssignmentScope, target: TargetScope): boolean {
+  if (target.type === 'global' || s.type === 'global') return false;
+  if (s.type === 'company') return s.id === target.companyId;
+  if (s.type === 'business') return 'businessId' in target && target.businessId === s.id;
+  return target.type === 'site' && target.siteId === s.id;
+}
+
 @Injectable()
 export class PermissionGuard implements CanActivate {
   private readonly trusted: ReadonlySet<string>;
@@ -58,15 +67,10 @@ export class PermissionGuard implements CanActivate {
     const { axeda } = this.auth;
     if (!(await axeda.can(principal, req.permission, target))) throw new ForbiddenException();
 
+    // Los datos de clientes solo se conceden desde la compañía, el negocio o la sede: nunca desde global.
     if (TENANT_DATA_PERMISSIONS.has(req.permission)) {
-      if (target.type === 'global') throw new ForbiddenException();
       const scopes = await axeda.scopesFor(principal, req.permission);
-      const fromTenant = scopes.some(
-        (s) =>
-          (s.type === 'company' && s.id === target.companyId) ||
-          (s.type === 'business' && target.type === 'business' && s.id === target.businessId),
-      );
-      if (!fromTenant) throw new ForbiddenException();
+      if (!scopes.some((s) => grantsFromTenant(s, target))) throw new ForbiddenException();
     }
 
     this.cls.set('actor', {
@@ -75,7 +79,10 @@ export class PermissionGuard implements CanActivate {
       userAgent: http.get('user-agent') ?? undefined,
     });
     if (target.type !== 'global') this.cls.set('companyId', target.companyId);
-    if (target.type === 'business') this.cls.set('businessId', target.businessId);
+    if ((target.type === 'business' || target.type === 'site') && target.businessId) {
+      this.cls.set('businessId', target.businessId);
+    }
+    if (target.type === 'site') this.cls.set('siteId', target.siteId);
     return true;
   }
 
@@ -84,7 +91,9 @@ export class PermissionGuard implements CanActivate {
     const [type, param] =
       'company' in req.scope
         ? (['company', req.scope.company] as const)
-        : (['business', req.scope.business] as const);
+        : 'business' in req.scope
+          ? (['business', req.scope.business] as const)
+          : (['site', req.scope.site] as const);
     const id = http.params[param];
     if (typeof id !== 'string' || id.length === 0 || id.length > 128) throw new ForbiddenException();
     const scope: AssignmentScope = { type, id };

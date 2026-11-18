@@ -1,13 +1,13 @@
-import { Body, Controller, Get, Module, NotFoundException, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Module, NotFoundException, Param, Put } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { ZodResponse } from 'nestjs-zod';
 import { PERMISSIONS } from '../../auth/permissions.js';
 import { RequirePermission } from '../../auth/require-permission.decorator.js';
 import { AuditModule } from '../audit/audit.module.js';
-import { CreateSiteDto, SiteDto } from './sites.schemas.js';
+import { SiteDto, SiteSettingsDto } from './sites.schemas.js';
 import { SitesRepository } from './sites.repository.js';
 
-type SiteRow = Awaited<ReturnType<SitesRepository['create']>>;
+type SiteRow = NonNullable<Awaited<ReturnType<SitesRepository['findById']>>>;
 const toDto = (s: SiteRow) => ({
   ...s,
   latitude: s.latitude.toNumber(),
@@ -17,35 +17,35 @@ const toDto = (s: SiteRow) => ({
 });
 
 /**
- * Sedes de Tempora (ubicación y radio). Mientras Axeda no publique las sedes (alpha.2), el permiso
- * se comprueba en la compañía; después se enlazan por axedaSiteId y se podrá limitar por sede.
+ * Datos de Tempora de las sedes. La sede se crea en Axeda (POST /api/auth/axeda/site/create) y aquí
+ * se le pone ubicación y radio. Un líder de sede ve y ajusta solo la suya.
  */
 @ApiTags('sedes')
-@Controller('companies/:companyId/sites')
+@Controller()
 class SitesController {
   constructor(private readonly sites: SitesRepository) {}
 
-  @Get()
+  @Get('companies/:companyId/sites')
   @RequirePermission(PERMISSIONS.siteRead, { company: 'companyId' })
   @ZodResponse({ type: [SiteDto] })
   async list(@Param('companyId') _companyId: string) {
     return (await this.sites.list()).map(toDto);
   }
 
-  @Get(':siteId')
-  @RequirePermission(PERMISSIONS.siteRead, { company: 'companyId' })
+  @Get('sites/:siteId')
+  @RequirePermission(PERMISSIONS.siteRead, { site: 'siteId' })
   @ZodResponse({ type: SiteDto })
-  async get(@Param('companyId') _companyId: string, @Param('siteId', ParseUUIDPipe) siteId: string) {
+  async get(@Param('siteId') siteId: string) {
     const site = await this.sites.findById(siteId);
-    if (!site) throw new NotFoundException();
+    if (!site) throw new NotFoundException('La sede no tiene ubicación configurada');
     return toDto(site);
   }
 
-  @Post()
-  @RequirePermission(PERMISSIONS.siteManage, { company: 'companyId' })
-  @ZodResponse({ status: 201, type: SiteDto })
-  async create(@Param('companyId') _companyId: string, @Body() body: CreateSiteDto) {
-    return toDto(await this.sites.create(body));
+  @Put('sites/:siteId')
+  @RequirePermission(PERMISSIONS.siteManage, { site: 'siteId' })
+  @ZodResponse({ type: SiteDto })
+  async save(@Param('siteId') _siteId: string, @Body() body: SiteSettingsDto) {
+    return toDto(await this.sites.save(body));
   }
 }
 

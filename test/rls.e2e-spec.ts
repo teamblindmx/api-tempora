@@ -12,7 +12,7 @@ beforeAll(async () => {
   db = createPrismaClient(testConfig().DATABASE_URL, 4);
   for (const c of [A, B]) {
     const s = await withCompany(db, c, (tx) =>
-      tx.site.create({ data: { companyId: c, name: `sede-${c}`, latitude: 20, longitude: -103 } }),
+      tx.site.create({ data: { companyId: c, id: `sede-${c}`, latitude: 20, longitude: -103 } }),
     );
     ids[c] = s.id;
     await withCompany(db, c, (tx) =>
@@ -86,19 +86,19 @@ describe('Aislamiento en la base (rol de la API)', () => {
 
   it('actualización y borrado sobre filas de otra compañía no afectan nada', async () => {
     const u = await withCompany(db, A, (tx) =>
-      tx.site.updateMany({ where: { id: ids[B]! }, data: { name: 'x' } }),
+      tx.site.updateMany({ where: { id: ids[B]! }, data: { radiusM: 999 } }),
     );
     expect(u.count).toBe(0);
     const d = await withCompany(db, A, (tx) => tx.site.deleteMany({ where: { id: ids[B]! } }));
     expect(d.count).toBe(0);
     const b = await withCompany(db, B, (tx) => tx.site.findUnique({ where: { id: ids[B]! } }));
-    expect(b?.name).toBe(`sede-${B}`);
+    expect(b?.radiusM).toBe(500);
   });
 
   it('no se puede insertar ni mover filas a otra compañía', async () => {
     await expect(
       withCompany(db, A, (tx) =>
-        tx.site.create({ data: { companyId: B, name: 'x', latitude: 0, longitude: 0 } }),
+        tx.site.create({ data: { companyId: B, id: randomUUID(), latitude: 0, longitude: 0 } }),
       ),
     ).rejects.toThrow(/row-level security/);
     await expect(
@@ -118,7 +118,7 @@ describe('Aislamiento en la base (rol de la API)', () => {
     expect(await db.site.findMany()).toEqual([]);
     expect(await db.$queryRaw`SELECT * FROM app.site`).toEqual([]);
     await expect(
-      db.site.create({ data: { companyId: A, name: 'x', latitude: 0, longitude: 0 } }),
+      db.site.create({ data: { companyId: A, id: randomUUID(), latitude: 0, longitude: 0 } }),
     ).rejects.toThrow(/row-level security/);
   });
 
