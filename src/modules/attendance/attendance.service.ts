@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { Prisma } from '../../../generated/prisma/client.js';
 import { Clock } from '../../common/clock.js';
@@ -7,38 +7,24 @@ import type { TransactionClient } from '../../database/prisma-client.js';
 import { TenantDb } from '../../database/tenant-db.service.js';
 import type { RequestContext } from '../../tenancy/request-context.js';
 import { AuditService } from '../audit/audit.service.js';
-import { ATTENDANCE_ERRORS, type AttendanceRecord } from './attendance.schemas.js';
-import { checkLocation, type Coordinates } from './rules/location.js';
+import { ATTENDANCE_ERRORS } from './attendance.schemas.js';
 import {
-  canSelfCheckOut,
-  DAILY_CODE_DIGITS,
-  evaluateCheckOut,
-  locationReview,
-  recordStatus,
-} from './rules/marking.js';
-import { localDate, scheduledEnd, type Shift } from './rules/workday.js';
+  fail,
+  fromDate,
+  shiftOf,
+  siteCoords,
+  siteOrFail,
+  toDate,
+  toRecordDto,
+} from './attendance.records.js';
+import { checkLocation, type Coordinates } from './rules/location.js';
+import { canSelfCheckOut, DAILY_CODE_DIGITS, evaluateCheckOut, locationReview } from './rules/marking.js';
+import { localDate, scheduledEnd } from './rules/workday.js';
 
 const MIN = 60_000;
 
 type Location = (Coordinates & { accuracyM?: number | undefined }) | null;
-type SiteRow = NonNullable<Awaited<ReturnType<TransactionClient['site']['findFirst']>>>;
-type RecordRow = NonNullable<Awaited<ReturnType<TransactionClient['attendanceRecord']['findFirst']>>>;
 type CodeRow = NonNullable<Awaited<ReturnType<TransactionClient['dailyCode']['findFirst']>>>;
-
-/** Error de negocio: estado HTTP, código estable y mensaje en español para la persona. */
-function fail(status: HttpStatus, code: string, message: string): never {
-  throw new HttpException({ statusCode: status, code, message }, status);
-}
-
-const toDate = (workDate: string) => new Date(`${workDate}T00:00:00Z`);
-const fromDate = (d: Date) => d.toISOString().slice(0, 10);
-const shiftOf = (site: SiteRow): Shift | null =>
-  site.shiftStart && site.shiftEnd ? { start: site.shiftStart, end: site.shiftEnd } : null;
-const siteCoords = (site: SiteRow) => ({
-  latitude: site.latitude.toNumber(),
-  longitude: site.longitude.toNumber(),
-  radiusM: site.radiusM,
-});
 
 export function toCodeDto(c: CodeRow) {
   return {
@@ -47,40 +33,6 @@ export function toCodeDto(c: CodeRow) {
     code: c.code,
     createdAt: c.createdAt.toISOString(),
     expiresAt: c.expiresAt.toISOString(),
-  };
-}
-
-type RecordView = Pick<
-  RecordRow,
-  | 'id'
-  | 'siteId'
-  | 'userId'
-  | 'workDate'
-  | 'checkInAt'
-  | 'checkInDistanceM'
-  | 'checkOutAt'
-  | 'checkOutDistanceM'
-  | 'checkOutKind'
-  | 'checkOutReason'
-  | 'reviewReasons'
->;
-
-function toRecordDto(r: RecordView, today: string, shift: Shift | null): AttendanceRecord {
-  const workDate = fromDate(r.workDate);
-  return {
-    id: r.id,
-    siteId: r.siteId,
-    userId: r.userId,
-    workDate,
-    status: recordStatus({ workDate, checkOutAt: r.checkOutAt }, today, shift),
-    checkInAt: r.checkInAt.toISOString(),
-    checkInDistanceM: r.checkInDistanceM,
-    checkOutAt: r.checkOutAt?.toISOString() ?? null,
-    checkOutDistanceM: r.checkOutDistanceM,
-    checkOutKind: r.checkOutKind === 'regular' || r.checkOutKind === 'early' ? r.checkOutKind : null,
-    checkOutReason: r.checkOutReason,
-    needsReview: r.reviewReasons.length > 0,
-    reviewReasons: r.reviewReasons,
   };
 }
 
@@ -105,24 +57,12 @@ export class AttendanceService {
     return { siteId, userId };
   }
 
-  private async site(tx: TransactionClient, companyId: string, siteId: string) {
-    const site = await tx.site.findFirst({ where: { id: siteId, companyId } });
-    if (!site) {
-      fail(
-        HttpStatus.CONFLICT,
-        ATTENDANCE_ERRORS.siteNotConfigured,
-        'La sede aún no tiene ubicación configurada',
-      );
-    }
-    return site;
-  }
-
   /** Genera el código de la sede y vence el anterior (regla 2). */
   createDailyCode(ttlMinutes: number) {
     const { siteId, userId } = this.context();
     const now = this.clock.now();
     return this.db.run(async (tx, companyId) => {
-      await this.site(tx, companyId, siteId);
+      await siteOrFail(tx, companyId, siteId);
       await tx.dailyCode.updateMany({
         where: { companyId, siteId, expiresAt: { gt: now } },
         data: { expiresAt: now },
@@ -169,7 +109,7 @@ export class AttendanceService {
     const now = this.clock.now();
     try {
       return await this.db.run(async (tx, companyId) => {
-        const site = await this.site(tx, companyId, siteId);
+        const site = await siteOrFail(tx, companyId, siteId);
         const dailyCode = await tx.dailyCode.findFirst({
           where: { companyId, siteId, code },
           orderBy: { createdAt: 'desc' },
@@ -240,7 +180,7 @@ export class AttendanceService {
     const { siteId, userId } = this.context();
     const now = this.clock.now();
     return this.db.run(async (tx, companyId) => {
-      const site = await this.site(tx, companyId, siteId);
+      const site = await siteOrFail(tx, companyId, siteId);
       const shift = shiftOf(site);
       const today = localDate(now, site.timezone);
       // La jornada que se puede cerrar es la de hoy (o la de ayer en un turno de noche); una más
@@ -299,6 +239,7 @@ export class AttendanceService {
         checkOutDistanceM: check.distanceM,
         checkOutKind: result.kind,
         checkOutReason: reason,
+        checkOutSource: 'self',
         reviewReasons,
       };
       // checkOutAt: null en el where: si dos salidas llegan juntas, solo una cierra la jornada.
@@ -331,7 +272,7 @@ export class AttendanceService {
     const { siteId, userId } = this.context();
     const now = this.clock.now();
     return this.db.run(async (tx, companyId) => {
-      const site = await this.site(tx, companyId, siteId);
+      const site = await siteOrFail(tx, companyId, siteId);
       const shift = shiftOf(site);
       const today = localDate(now, site.timezone);
       const [record, open] = await Promise.all([

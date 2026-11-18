@@ -81,3 +81,12 @@ export function crossesMidnight(shift: Shift): boolean {
 export function scheduledEnd(workDate: string, shift: Shift, timeZone: string): Date {
   return zonedTime(crossesMidnight(shift) ? addDays(workDate, 1) : workDate, shift.end, timeZone);
 }
+
+/**
+ * La hora local de la sede como si fuera UTC: para escribir fechas en Excel, que no tiene zonas
+ * horarias y muestra lo que recibe (write-excel-file convierte en UTC).
+ */
+export function wallClock(instant: Date, timeZone: string): Date {
+  const p = parts(instant, timeZone);
+  return new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second));
+}

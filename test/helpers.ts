@@ -109,21 +109,24 @@ export interface TestUser {
 const cookieOf = (res: request.Response) =>
   (res.headers['set-cookie'] as unknown as string[]).map((c) => c.split(';')[0]).join('; ');
 
-/** Registro, verificación de correo e inicio de sesión, por HTTP como lo haría el frontend. */
-export async function createUser(t: TestApp, name: string): Promise<TestUser> {
+/**
+ * Registro, verificación de correo e inicio de sesión, por HTTP como lo haría el frontend. Better Auth
+ * limita registros e inicios de sesión por IP (5 cada tanto): un archivo que necesita más usuarios
+ * que los de createTenants les pone otra IP con `ip`.
+ */
+export async function createUser(t: TestApp, name: string, opts: { ip?: string } = {}): Promise<TestUser> {
+  const fromIp = (r: request.Test) => (opts.ip ? r.set('X-Forwarded-For', opts.ip) : r);
   // Better Auth guarda el correo en minúsculas.
   const email = `${name}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}@example.com`.toLowerCase();
   const password = 'contraseña-de-prueba-123';
   t.outbox.delete(email);
-  const up = await request(t.server)
-    .post('/api/auth/sign-up/email')
+  const up = await fromIp(request(t.server).post('/api/auth/sign-up/email'))
     .set('Origin', FRONTEND)
     .send({ email, password, name });
   if (up.status !== 200) throw new Error(`sign-up ${up.status}: ${up.text}`);
   const u = new URL(await waitFor(t.outbox, email));
   await request(t.server).get(u.pathname + u.search);
-  const res = await request(t.server)
-    .post('/api/auth/sign-in/email')
+  const res = await fromIp(request(t.server).post('/api/auth/sign-in/email'))
     .set('Origin', FRONTEND)
     .send({ email, password });
   if (res.status !== 200) throw new Error(`sign-in ${res.status}: ${res.text}`);

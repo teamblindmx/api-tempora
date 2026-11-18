@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, isValidTimeZone, localDate, scheduledEnd, zonedTime } from './workday.js';
+import { addDays, isValidTimeZone, localDate, scheduledEnd, wallClock, zonedTime } from './workday.js';
 
 const CDMX = 'America/Mexico_City'; // UTC-6, sin horario de verano desde 2022.
 const TIJUANA = 'America/Tijuana'; // Sí cambia de horario (frontera).
@@ -49,5 +49,14 @@ describe('isValidTimeZone', () => {
   it('acepta zonas IANA y rechaza lo demás', () => {
     expect(isValidTimeZone(CDMX)).toBe(true);
     expect(isValidTimeZone('Mexico/Guadalajara')).toBe(false);
+  });
+});
+
+describe('wallClock', () => {
+  it('da la hora local de la sede con los campos de UTC (para Excel)', () => {
+    expect(wallClock(new Date('2026-12-01T14:05:00Z'), CDMX).toISOString()).toBe('2026-12-01T08:05:00.000Z');
+    expect(wallClock(new Date('2026-07-01T15:00:00Z'), TIJUANA).toISOString()).toBe(
+      '2026-07-01T08:00:00.000Z',
+    );
   });
 });
