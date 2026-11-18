@@ -107,7 +107,8 @@ model DailyCode {
 
 /// Una jornada de un trabajador: su entrada y su salida. La hora la pone el servidor (regla 1).
 /// Una por trabajador y día de jornada (fecha local de la sede al entrar). No se borra: la API no
-/// tiene DELETE sobre esta tabla, y las correcciones (semana 3) se auditan.
+/// tiene DELETE sobre esta tabla. Entrada y salida dicen quién las registró: el propio trabajador
+/// ("self") o el líder por él ("manual", con autor y comentario obligatorio; ADR 0013).
 model AttendanceRecord {
   id        String   @id @default(uuid()) @db.Uuid
   companyId String   @map("company_id")
@@ -122,7 +123,14 @@ model AttendanceRecord {
   checkInAccuracyM Int?     @map("check_in_accuracy_m")
   /// Distancia real a la sede (regla 4), para afinar el radio. Null si no hubo ubicación.
   checkInDistanceM Int?     @map("check_in_distance_m")
-  dailyCodeId      String   @map("daily_code_id") @db.Uuid
+  /// Código con que marcó. Null solo en una entrada manual del líder.
+  dailyCodeId      String?  @map("daily_code_id") @db.Uuid
+  /// "self" (el trabajador, con código) o "manual" (el líder por él).
+  checkInSource    String   @default("self") @map("check_in_source")
+  /// Usuario de Axeda que registró una entrada manual.
+  checkInBy        String?  @map("check_in_by")
+  /// Comentario obligatorio de una entrada manual.
+  checkInComment   String?  @map("check_in_comment")
 
   checkOutAt        DateTime? @map("check_out_at") @db.Timestamptz(3)
   checkOutLatitude  Decimal?  @map("check_out_latitude") @db.Decimal(9, 6)
@@ -133,6 +141,10 @@ model AttendanceRecord {
   checkOutKind      String?   @map("check_out_kind")
   /// Motivo de una salida anticipada (obligatorio en ese caso).
   checkOutReason    String?   @map("check_out_reason")
+  /// "self" o "manual". Null mientras no haya salida.
+  checkOutSource    String?   @map("check_out_source")
+  checkOutBy        String?   @map("check_out_by")
+  checkOutComment   String?   @map("check_out_comment")
 
   /// Motivos de "por revisar" (ver rules/marking.ts). Vacío: no hay nada que revisar.
   reviewReasons String[] @default([]) @map("review_reasons")
@@ -141,10 +153,11 @@ model AttendanceRecord {
 
   // FK compuestas: una jornada nunca apunta a una sede o a un código de otra compañía.
   site      Site      @relation(fields: [siteId, companyId], references: [id, companyId])
-  dailyCode DailyCode @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
+  dailyCode DailyCode? @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
 
   @@unique([companyId, userId, workDate])
   @@index([companyId, siteId, workDate])
+  @@index([companyId, workDate])
   @@map("attendance_record")
   @@schema("app")
 }

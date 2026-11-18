@@ -148,6 +148,36 @@ WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y
 - Cada código, entrada y salida deja auditoría en la misma transacción, sin coordenadas (solo distancia).
 - La API no tiene `DELETE` sobre `daily_code` ni `attendance_record`.
 
+### Jornada: panel del líder, marcado manual, calendario y Excel
+
+| Ruta                                                   | Permiso                  | Qué hace                                                         |
+| ------------------------------------------------------ | ------------------------ | ---------------------------------------------------------------- |
+| `GET /sites/:siteId/attendance/day?date=`              | `attendance:read`        | Quién llegó y quién falta (hoy por defecto) y salidas pendientes |
+| `POST /sites/:siteId/attendance/manual/check-in`       | `attendance:mark-manual` | Entrada por un trabajador: `{ userId, comment, at? }`            |
+| `POST /sites/:siteId/attendance/manual/check-out`      | `attendance:mark-manual` | Salida por un trabajador: `{ userId, comment, at?, workDate? }`  |
+| `GET /sites/:siteId/attendance/me/calendar?month=`     | `attendance:mark`        | Mi mes en la sede, día por día, con totales                      |
+| `GET /sites/:siteId/attendance/users/:userId/calendar` | `attendance:read`        | El mes de un trabajador, para el líder                           |
+| `GET /sites/:siteId/attendance/export?from=&to=`       | `report:export`          | Excel de la sede                                                 |
+| `GET /businesses/:businessId/attendance/export`        | `report:export`          | Excel del negocio (mismos `from` y `to`)                         |
+| `GET /companies/:companyId/attendance/export`          | `report:export`          | Excel de toda la compañía                                        |
+
+- La plantilla de la sede es quien tiene una asignación vigente de Axeda en ella con un rol que marca
+  asistencia (`attendance:mark`). Quien marcó pero ya no está asignado sale con `onRoster: false`.
+- Cada entrada y salida dice quién la registró: `checkInSource`/`checkOutSource` es `self` (el
+  trabajador, con código) o `manual` (el líder), con `checkInBy`/`checkOutBy` y el comentario. La
+  base exige autor y comentario en lo manual y rechaza que alguien se registre a sí mismo a mano.
+- Marcado manual: solo para gente de la sede, hasta 7 días atrás, nunca en el futuro, jornadas de
+  máximo 24 horas. Para cerrar una salida pendiente de otro día, `at` (la hora real) es obligatoria.
+  Errores: `TEMPORA_MANUAL_SELF`, `TEMPORA_NOT_SITE_EMPLOYEE`, `TEMPORA_MANUAL_TIME_INVALID`,
+  `TEMPORA_MANUAL_TIME_REQUIRED`.
+- El panel da `minutesAfterStart` (minutos después de la entrada oficial), no "retardo": falta la
+  tolerancia de cada sede. En el calendario, un día sin jornada es `no-record`, no "falta".
+- Excel: hoja "Jornadas" (una fila por jornada, horas locales de la sede, horas en decimal, quién
+  registró cada parte, comentarios y motivos de revisión) y "Resumen" (por persona y sede). Rango de
+  hasta 62 días. Solo horas, nunca dinero. Cada exportación queda en la auditoría. El líder no
+  exporta: `report:export` es de los administradores.
+- Prueba manual en Windows: `scripts/prueba-panel.ps1` (ADR 0013).
+
 ### Cookies
 
 Better Auth usa cookies `HttpOnly` y `SameSite=Lax`, así que frontend y API deben estar en el mismo
@@ -157,9 +187,9 @@ desde un origen que no está en la lista reciben 403.
 
 ## Pendiente
 
-- Jornada (semana 3): entrada tardía con código vencido, panel del líder, marcado manual y corrección de
-  "salida pendiente" con comentario, y avisos al líder.
-- Horario oficial y tolerancia de retardo de cada sede (pregunta abierta 4 del PRD).
+- Jornada: entrada tardía con código vencido, corregir la hora de un marcado ya registrado
+  (`attendance:correct`), marcar como revisada una jornada "por revisar", y avisos al líder.
+- Horario oficial, tolerancia de retardo y días de descanso de cada sede (pregunta abierta 4 del PRD).
 
 - WhatsApp con Meta como canal principal (Twilio queda de respaldo), cuando esté la cuenta aprobada.
 - Elegir proveedor de correo y conectarlo en `src/auth/messaging.ts`.

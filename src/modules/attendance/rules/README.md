@@ -13,3 +13,5 @@ validadas por un laboralista: aquí solo se calculan horas, nunca dinero (regla 
 | `workday.ts`  | 1: día de jornada y horario en la zona de la sede                      |
 | `marking.ts`  | 2, 3, 6, 7 y 8 juntas: qué queda "por revisar" en una entrada o salida |
 | `overtime.ts` | 15: horas extra dobles y triples                                       |
+| `manual.ts`   | 13: límites del marcado manual del líder (hasta 7 días, máximo 24 h)   |
+| `panel.ts`    | Panel del líder, calendario y rango de exportación (sin retardos)      |

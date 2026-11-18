@@ -272,9 +272,52 @@ describe('Jornada: códigos y marcajes', () => {
       withCompany(db, A, (tx) =>
         tx.attendanceRecord.update({
           where: { id: records[A]! },
-          data: { checkOutAt: new Date(now.getTime() + 3600_000), checkOutKind: 'early' },
+          data: {
+            checkOutAt: new Date(now.getTime() + 3600_000),
+            checkOutKind: 'early',
+            checkOutSource: 'self',
+          },
         }),
       ),
     ).rejects.toThrow(/attendance_early_exit_reason/);
+  });
+
+  it('marcado manual: sin código, pero con autor y comentario; nunca por uno mismo', async () => {
+    const base = {
+      companyId: A,
+      siteId: ids[A]!,
+      userId: 'u3',
+      workDate: new Date('2026-12-03T00:00:00Z'),
+      checkInAt: now,
+    };
+    const create = (data: object) =>
+      withCompany(db, A, (tx) => tx.attendanceRecord.create({ data: { ...base, ...data } }));
+    // La del trabajador lleva código; sin código solo puede ser manual.
+    await expect(create({})).rejects.toThrow(/attendance_check_in_source/);
+    await expect(create({ checkInSource: 'manual', checkInBy: 'leader' })).rejects.toThrow(
+      /attendance_check_in_source/,
+    );
+    await expect(
+      create({ checkInSource: 'manual', checkInBy: 'leader', checkInComment: '  ' }),
+    ).rejects.toThrow(/attendance_check_in_source/);
+    await expect(
+      create({ checkInSource: 'manual', checkInBy: 'u3', checkInComment: 'Me marco yo' }),
+    ).rejects.toThrow(/attendance_manual_not_self/);
+    const ok = await create({ checkInSource: 'manual', checkInBy: 'leader', checkInComment: 'Sin teléfono' });
+    // Una salida sin origen, o manual sin comentario, tampoco entra.
+    const close = (data: object) =>
+      withCompany(db, A, (tx) =>
+        tx.attendanceRecord.update({
+          where: { id: ok.id },
+          data: { checkOutAt: new Date(now.getTime() + 3600_000), checkOutKind: 'regular', ...data },
+        }),
+      );
+    await expect(close({})).rejects.toThrow(/attendance_check_out_source/);
+    await expect(close({ checkOutSource: 'manual', checkOutBy: 'leader' })).rejects.toThrow(
+      /attendance_check_out_source/,
+    );
+    await expect(
+      close({ checkOutSource: 'manual', checkOutBy: 'leader', checkOutComment: 'Salió con permiso' }),
+    ).resolves.toMatchObject({ checkOutSource: 'manual' });
   });
 });

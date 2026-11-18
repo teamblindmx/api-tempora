@@ -28,6 +28,10 @@ import {
   MyAttendanceDto,
 } from './attendance.schemas.js';
 import { AttendanceService, toCodeDto } from './attendance.service.js';
+import { ExportService } from './export.service.js';
+import { LEADER_CONTROLLERS } from './leader.controllers.js';
+import { LeaderService } from './leader.service.js';
+import { PeopleDirectory } from './people.js';
 
 /** Intentos de entrada por usuario y minuto. */
 export const CHECK_IN_LIMIT = 10;
@@ -103,12 +107,13 @@ class AttendanceController {
 }
 
 /**
- * Jornada: código diario, entrada con ubicación y salida (semana 2). Las reglas viven en ./rules
- * como funciones puras.
+ * Jornada: código diario, entrada con ubicación y salida (semana 2); panel del líder, marcado
+ * manual, calendario y exportación a Excel (semana 3). Las reglas viven en ./rules como funciones
+ * puras.
  */
 @Module({
   imports: [AuditModule, ThrottlerModule.forRoot([{ name: 'check-in', limit: CHECK_IN_LIMIT, ttl: 60_000 }])],
-  controllers: [DailyCodeController, AttendanceController],
-  providers: [AttendanceService, Clock, PerUserThrottlerGuard],
+  controllers: [DailyCodeController, AttendanceController, ...LEADER_CONTROLLERS],
+  providers: [AttendanceService, LeaderService, ExportService, PeopleDirectory, Clock, PerUserThrottlerGuard],
 })
 export class AttendanceModule {}
