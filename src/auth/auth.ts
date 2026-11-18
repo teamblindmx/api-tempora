@@ -12,7 +12,8 @@ import {
 import type { Axeda, AssignmentScope } from '@teamblind/axeda-core';
 import { type AppConfig, appUrl } from '../config/config.js';
 import { canGrant, grantorLevel } from './grant-policy.js';
-import { consoleMailer, consoleSms, type Mailer, type SmsSender, smsText } from './messaging.js';
+import { consoleMailer, type Mailer, type SmsSender, smsText } from './messaging.js';
+import { smsFromConfig } from './sms/from-config.js';
 import { PERMISSION_CATALOG, ROLES } from './permissions.js';
 
 export type { Mailer, SmsSender } from './messaging.js';
@@ -36,7 +37,7 @@ const isGrantRoute = (path: string): path is keyof typeof GRANT_ROUTES => Object
  */
 export function buildAuthOptions(config: AppConfig, messaging: Messaging = {}) {
   const mailer = messaging.mailer ?? consoleMailer;
-  const sms = messaging.sms ?? consoleSms;
+  const sms = messaging.sms ?? smsFromConfig(config);
   const pool = new pg.Pool({
     connectionString: config.DATABASE_URL_AUTH,
     max: config.AUTH_POOL_MAX,

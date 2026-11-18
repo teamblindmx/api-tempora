@@ -195,3 +195,86 @@ describe('Concurrencia en un solo pool', () => {
     expect(await withCompany(db, randomUUID(), (tx) => tx.site.count())).toBe(0);
   });
 });
+
+describe('Jornada: códigos y marcajes', () => {
+  const now = new Date('2026-12-01T14:00:00Z');
+  const codes: Record<string, string> = {};
+  const records: Record<string, string> = {};
+
+  beforeAll(async () => {
+    for (const c of [A, B]) {
+      const code = await withCompany(db, c, (tx) =>
+        tx.dailyCode.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            code: '123456',
+            createdBy: 'u',
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 30 * 60_000),
+          },
+        }),
+      );
+      codes[c] = code.id;
+      const r = await withCompany(db, c, (tx) =>
+        tx.attendanceRecord.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            userId: 'u1',
+            workDate: new Date('2026-12-01T00:00:00Z'),
+            checkInAt: now,
+            dailyCodeId: code.id,
+          },
+        }),
+      );
+      records[c] = r.id;
+    }
+  });
+
+  it('cada compañía ve solo sus códigos y jornadas, aunque el código coincida', async () => {
+    const found = await withCompany(db, A, (tx) => tx.dailyCode.findMany({ where: { code: '123456' } }));
+    expect(found.map((c) => c.id)).toEqual([codes[A]]);
+    expect(await withCompany(db, A, (tx) => tx.attendanceRecord.findMany())).toEqual([
+      expect.objectContaining({ id: records[A], companyId: A }),
+    ]);
+    const u = await withCompany(db, A, (tx) =>
+      tx.attendanceRecord.updateMany({ where: { id: records[B]! }, data: { checkOutAt: now } }),
+    );
+    expect(u.count).toBe(0);
+  });
+
+  it('una jornada de A no puede usar un código ni una sede de B (FK compuestas)', async () => {
+    const base = { companyId: A, userId: 'u2', workDate: new Date('2026-12-02T00:00:00Z'), checkInAt: now };
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.attendanceRecord.create({ data: { ...base, siteId: ids[A]!, dailyCodeId: codes[B]! } }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.attendanceRecord.create({ data: { ...base, siteId: ids[B]!, dailyCodeId: codes[A]! } }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+  });
+
+  it('la API no puede borrar jornadas ni códigos (son la evidencia del registro)', async () => {
+    await expect(withCompany(db, A, (tx) => tx.attendanceRecord.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+    await expect(withCompany(db, A, (tx) => tx.dailyCode.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+  });
+
+  it('una salida anticipada sin motivo no entra a la base', async () => {
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.attendanceRecord.update({
+          where: { id: records[A]! },
+          data: { checkOutAt: new Date(now.getTime() + 3600_000), checkOutKind: 'early' },
+        }),
+      ),
+    ).rejects.toThrow(/attendance_early_exit_reason/);
+  });
+});

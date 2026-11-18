@@ -107,7 +107,46 @@ compañía, cualquiera. Responde 403 con `code: TEMPORA_GRANT_FORBIDDEN`.
   recibe un correo de relleno (`@phone.invalid`); no lo uses como identificador.
 - Invitaciones por correo o teléfono, con enlace `APP_URL/invitacion?token=...`. El frontend acepta con
   `POST /api/auth/axeda/invitation/accept`.
-- Los envíos pasan por `Mailer` y `SmsSender` (`src/auth/messaging.ts`). Falta conectar un proveedor real.
+- Los envíos pasan por `Mailer` y `SmsSender` (`src/auth/messaging.ts`). Los SMS salen por Twilio con
+  `SMS_PROVIDER=twilio` (ADR 0011); en desarrollo, `console` los imprime.
+
+### SMS con Twilio
+
+1. En la consola de Twilio copia el Account SID (`AC...`). Para producción crea una API key (`SK...`) y
+   usa su secreto como `TWILIO_AUTH_TOKEN`; en desarrollo basta el Auth Token de la cuenta.
+2. Pon el remitente: un número de Twilio en `TWILIO_FROM` (E.164) o un Messaging Service en
+   `TWILIO_MESSAGING_SERVICE_SID` (`MG...`), que conviene para México por el registro de remitentes.
+3. En `.env`: `SMS_PROVIDER=twilio` y esas variables. Si falta alguna, la API no arranca y dice cuál.
+
+Para probar sin gastar, usa las credenciales de prueba de Twilio con `TWILIO_FROM=+15005550006`.
+Los registros guardan el canal y el código de error de Twilio, nunca el texto ni el código de acceso.
+
+`withFallback` (`src/auth/sms/fallback.ts`) prueba canales en orden. Hoy solo hay Twilio; cuando
+WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y Twilio queda de respaldo.
+
+### Jornada: código diario, entrada y salida
+
+| Ruta                                       | Permiso           | Qué hace                                                       |
+| ------------------------------------------ | ----------------- | -------------------------------------------------------------- |
+| `POST /sites/:siteId/daily-code`           | `daily-code:show` | Genera el código de 6 dígitos (20 a 30 min); vence el anterior |
+| `GET /sites/:siteId/daily-code`            | `daily-code:show` | El código vigente (404 si no hay)                              |
+| `POST /sites/:siteId/attendance/check-in`  | `attendance:mark` | Entrada con `{ code, location? }`                              |
+| `POST /sites/:siteId/attendance/check-out` | `attendance:mark` | Salida con `{ location?, reason? }`                            |
+| `GET /sites/:siteId/attendance/me`         | `attendance:mark` | Mi jornada de hoy y las que quedaron sin salida                |
+
+- La hora la pone el servidor (`Clock`); el cuerpo nunca trae hora.
+- Fuera del radio o sin ubicación, la entrada **no se rechaza**: queda con `needsReview` y el motivo en
+  `reviewReasons` (`entry:outside-radius`, `entry:no-location`), con la distancia real.
+- La salida se clasifica con el horario de la sede (`shiftStart`/`shiftEnd` en `PUT /sites/:siteId`):
+  antes de 30 minutos del cierre es anticipada y exige `reason`; más de 30 minutos de diferencia la
+  manda a revisión (`exit:off-schedule`). Sin horario configurado, toda salida es normal.
+- Una jornada por trabajador y día (fecha local de la sede). Si olvida la salida, al día siguiente queda
+  como `pending-exit` y ya no la puede cerrar él (la corrige el líder, semana 3).
+- Errores de negocio con `code` estable (`TEMPORA_CODE_INVALID`, `TEMPORA_CODE_EXPIRED`,
+  `TEMPORA_ALREADY_CHECKED_IN`, `TEMPORA_EXIT_PENDING`, ...; ver `attendance.schemas.ts`).
+- Tope de 10 intentos de entrada por usuario y minuto (429), contra adivinar el código.
+- Cada código, entrada y salida deja auditoría en la misma transacción, sin coordenadas (solo distancia).
+- La API no tiene `DELETE` sobre `daily_code` ni `attendance_record`.
 
 ### Cookies
 
@@ -118,7 +157,11 @@ desde un origen que no está en la lista reciben 403.
 
 ## Pendiente
 
-- Elegir proveedor de SMS (y de correo) y conectarlo en `src/auth/messaging.ts`. En producción la API
-  no arranca con `SMS_PROVIDER=console`.
+- Jornada (semana 3): entrada tardía con código vencido, panel del líder, marcado manual y corrección de
+  "salida pendiente" con comentario, y avisos al líder.
+- Horario oficial y tolerancia de retardo de cada sede (pregunta abierta 4 del PRD).
+
+- WhatsApp con Meta como canal principal (Twilio queda de respaldo), cuando esté la cuenta aprobada.
+- Elegir proveedor de correo y conectarlo en `src/auth/messaging.ts`.
 - Reglas del encargado que Axeda deja a Tempora: duración máxima, misma sede, avisar al administrador.
 - Pantalla de aceptación de invitaciones en el frontend (`/invitacion?token=...`).

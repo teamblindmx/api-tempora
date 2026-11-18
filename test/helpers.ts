@@ -178,11 +178,31 @@ export interface Tenants {
   roleId(key: RoleKey): string;
 }
 
+/**
+ * Hace dueño de la plataforma a `owner`. La base de pruebas es una para todos los archivos y Axeda
+ * solo admite un bootstrap: del segundo archivo en adelante, el primer dueño le otorga el rol.
+ */
+async function bootstrapOwner(t: TestApp, owner: TestUser) {
+  const [first] = await query<{ userId: string; roleId: string }>(
+    'auth',
+    `SELECT a."userId", a."roleId" FROM auth."axedaAssignment" a JOIN auth."axedaRole" r ON r.id = a."roleId"
+      WHERE r.key = 'super-admin' AND a."scopeType" = 'global' ORDER BY a."createdAt" LIMIT 1`,
+  );
+  if (!first) {
+    await t.auth.axeda.bootstrap({ userId: owner.userId });
+    return;
+  }
+  await t.auth.axeda.assignments.assign(
+    { userId: first.userId },
+    { userId: owner.userId, roleId: first.roleId, scope: { type: 'global' } },
+  );
+}
+
 /** Dueño de la plataforma, dos compañías con sedes y sus usuarios, creados con Axeda como lo haría el gestor. */
 export async function createTenants(t: TestApp): Promise<Tenants> {
   const { axeda } = t.auth;
   const owner = await createUser(t, 'owner');
-  await axeda.bootstrap({ userId: owner.userId });
+  await bootstrapOwner(t, owner);
 
   const suffix = Math.random().toString(36).slice(2, 8);
   const companyA = await axeda.companies.create(owner.actor, {

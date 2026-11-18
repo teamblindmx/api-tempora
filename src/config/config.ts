@@ -13,6 +13,14 @@ const csv = z
   )
   .pipe(z.array(z.url()).min(1));
 
+/** Variable opcional: vacía cuenta como ausente. */
+const optional = (schema: z.ZodString) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v ? v : undefined))
+    .pipe(schema.optional());
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -32,8 +40,17 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v ? v : undefined))
     .pipe(z.url().optional()),
-  /** Proveedor de SMS. Solo existe "console" (imprime el código) hasta que se elija uno real. */
-  SMS_PROVIDER: z.enum(['console']).default('console'),
+  /** Proveedor de SMS. "console" imprime el mensaje (solo desarrollo); "twilio" lo envía. */
+  SMS_PROVIDER: z.enum(['console', 'twilio']).default('console'),
+  TWILIO_ACCOUNT_SID: optional(z.string().regex(/^AC[0-9a-fA-F]{32}$/, 'debe ser AC seguido de 32 hex')),
+  /** Auth Token de la cuenta, o el secreto de la API key si se da TWILIO_API_KEY_SID. */
+  TWILIO_AUTH_TOKEN: optional(z.string().min(16)),
+  TWILIO_API_KEY_SID: optional(z.string().regex(/^SK[0-9a-fA-F]{32}$/, 'debe ser SK seguido de 32 hex')),
+  /** Remitente en E.164, o bien un Messaging Service. */
+  TWILIO_FROM: optional(z.string().regex(/^\+[1-9]\d{6,14}$/, 'debe estar en formato E.164')),
+  TWILIO_MESSAGING_SERVICE_SID: optional(
+    z.string().regex(/^MG[0-9a-fA-F]{32}$/, 'debe ser MG seguido de 32 hex'),
+  ),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   AUTH_POOL_MAX: z.coerce.number().int().min(1).max(100).default(5),
 });
@@ -57,6 +74,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError(
       'Configuración inválida:\n  - SMS_PROVIDER: "console" no envía mensajes; en producción hace falta un proveedor real',
     );
+  }
+  if (config.SMS_PROVIDER === 'twilio') {
+    const missing = [
+      !config.TWILIO_ACCOUNT_SID && 'TWILIO_ACCOUNT_SID',
+      !config.TWILIO_AUTH_TOKEN && 'TWILIO_AUTH_TOKEN',
+      !config.TWILIO_FROM &&
+        !config.TWILIO_MESSAGING_SERVICE_SID &&
+        'TWILIO_FROM o TWILIO_MESSAGING_SERVICE_SID',
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new ConfigError(
+        `Configuración inválida:\n${missing.map((m) => `  - ${m}: hace falta con SMS_PROVIDER=twilio`).join('\n')}`,
+      );
+    }
   }
   return config;
 }

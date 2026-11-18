@@ -46,6 +46,8 @@ export class SitesRepository {
               longitude: before.longitude.toNumber(),
               radiusM: before.radiusM,
               timezone: before.timezone,
+              shiftStart: before.shiftStart,
+              shiftEnd: before.shiftEnd,
             }
           : undefined,
         after: { ...input },
