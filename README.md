@@ -17,7 +17,8 @@ npm run start:dev
 
 - API: <http://localhost:3000> · documentación OpenAPI: <http://localhost:3000/docs>
 - Autenticación (Better Auth y endpoints de Axeda): `/api/auth/...`
-- Los correos de verificación se imprimen en la consola en desarrollo.
+- Los correos (verificación, invitaciones) y los SMS (códigos, invitaciones) se imprimen en la consola
+  en desarrollo.
 - Primer dueño de la plataforma: regístrate y luego `npm run bootstrap:admin -- tu@correo.com`.
 
 Sin Docker: corre `docker/postgres/01-roles.sql` y `02-database.sql` con `psql` como superusuario.
@@ -43,7 +44,7 @@ src/
   database/          Prisma 7 y TenantDb (transacción con la compañía de la petición para RLS).
   tenancy/           Contexto por petición (nestjs-cls): quién y en qué compañía.
   modules/
-    sites/           Sedes de Tempora: ubicación y radio.
+    sites/           Datos de Tempora de cada sede de Axeda: ubicación y radio.
     employees/       Perfiles de recursos humanos.
     audit/           Auditoría de solo inserción.
     attendance/      Jornada. rules/ son funciones puras, sin Nest ni base de datos.
@@ -53,8 +54,10 @@ test/                Pruebas de aislamiento contra PostgreSQL.
 docs/adr/            Decisiones (0009: NestJS sobre Express).
 ```
 
-Compañías, negocios y usuarios viven en Axeda (esquema `auth`); el frontend los administra con los
-endpoints de Axeda. Tempora guarda sus identificadores como texto, sin claves foráneas entre esquemas.
+Compañías, negocios, sedes y usuarios viven en Axeda (esquema `auth`); el frontend los administra con
+los endpoints de Axeda (`/api/auth/axeda/...`). Tempora guarda sus identificadores como texto, sin
+claves foráneas entre esquemas. Una sede se crea en Axeda (`/axeda/site/create`) y luego se le pone
+ubicación y radio con `PUT /sites/:siteId`.
 
 ### Base de datos: tres roles
 
@@ -71,8 +74,8 @@ endpoints de Axeda. Tempora guarda sus identificadores como texto, sin claves fo
    escribe nada.
 2. **Repositorios** que también filtran por `companyId`. Los controladores nunca usan Prisma.
 
-La compañía sale de la ruta (`/companies/:companyId/...`), la valida `PermissionGuard` con Axeda y se
-guarda en el contexto de la petición. `TenantDb.run(tx => ...)` abre una transacción con
+La compañía sale de la ruta (`/companies/:companyId/...` o, en rutas de sede, `/sites/:siteId/...`, cuya
+compañía y negocio se leen de Axeda), la valida `PermissionGuard` y se guarda en el contexto de la petición. `TenantDb.run(tx => ...)` abre una transacción con
 `set_config('app.company_id', ..., true)`, que vale solo para esa transacción.
 
 **Al agregar una tabla** en `app`: columna `company_id`, `ENABLE` + `FORCE ROW LEVEL SECURITY`, política
@@ -82,10 +85,29 @@ de negocio (las FK no pasan por RLS). La prueba de catálogo en `test/rls.e2e-sp
 ### Permisos y roles
 
 El código decide siempre por permiso, nunca por el nombre de un rol (`src/auth/permissions.ts`).
-Cada ruta declara `@RequirePermission(permiso, { company: 'companyId' })` o `@Public()`; lo demás se
-niega. Roles: administrador de compañía, administrador de negocio, líder, trabajador y encargado. El
+Cada ruta declara `@RequirePermission(permiso, { company: 'companyId' })` (o `{ site: 'siteId' }`,
+`{ business: ... }`) o `@Public()`; lo demás se niega. Una asignación de compañía vale en sus negocios y
+sedes; una de sede, solo en esa sede. Roles: administrador de compañía, administrador de negocio, líder, trabajador y encargado. El
 dueño de la plataforma es el administrador global de Axeda y **no** recibe permisos de datos de clientes
 (asistencia, empleados, auditoría): esos solo cuentan si se conceden en la compañía o el negocio.
+
+### Quién otorga qué
+
+Axeda deja otorgar un rol a quien tenga el permiso de gestión en ese lugar y cubra los permisos del rol.
+Eso permitiría a un líder nombrar a otro líder. Tempora lo cierra con un hook de Better Auth que revisa
+`/axeda/assignment/create`, `/axeda/assignment/revoke` y `/axeda/invitation/create` antes de que lleguen
+a Axeda (`GRANT_POLICY` en `src/auth/permissions.ts`): un líder (autoridad de sede) solo otorga o quita
+trabajador y encargado; un administrador de negocio, hasta líder y administrador de negocio; uno de
+compañía, cualquiera. Responde 403 con `code: TEMPORA_GRANT_FORBIDDEN`.
+
+### Teléfono e invitaciones
+
+- Acceso por teléfono con el plugin `phoneNumber` de Better Auth y el preset de Axeda: código de 6
+  dígitos, 5 minutos, 3 intentos, solo E.164 y tope de envíos por número. Quien entra solo con teléfono
+  recibe un correo de relleno (`@phone.invalid`); no lo uses como identificador.
+- Invitaciones por correo o teléfono, con enlace `APP_URL/invitacion?token=...`. El frontend acepta con
+  `POST /api/auth/axeda/invitation/accept`.
+- Los envíos pasan por `Mailer` y `SmsSender` (`src/auth/messaging.ts`). Falta conectar un proveedor real.
 
 ### Cookies
 
@@ -94,8 +116,9 @@ sitio (por ejemplo `app.tempora.mx` y `api.tempora.mx`). En producción: `COOKIE
 el origen del frontend en `TRUSTED_ORIGINS` y `BETTER_AUTH_URL` con https. Las escrituras con cookie
 desde un origen que no está en la lista reciben 403.
 
-## Pendiente (depende de Axeda)
+## Pendiente
 
-- Sedes como alcance de Axeda (alpha.2): enlazar `site.axeda_site_id`, permisos y pruebas de 403 por sede.
-- Registro por teléfono (alpha.3).
-- Que el líder pueda invitar a su sede sin poder otorgar el rol de líder (pregunta abierta al equipo de Axeda).
+- Elegir proveedor de SMS (y de correo) y conectarlo en `src/auth/messaging.ts`. En producción la API
+  no arranca con `SMS_PROVIDER=console`.
+- Reglas del encargado que Axeda deja a Tempora: duración máxima, misma sede, avisar al administrador.
+- Pantalla de aceptación de invitaciones en el frontend (`/invitacion?token=...`).

@@ -5,13 +5,13 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { toNodeHandler } from 'better-auth/node';
 import { cleanupOpenApiDoc } from 'nestjs-zod';
 import { AppModule } from './app.module.js';
-import { createAuth, type Mailer } from './auth/auth.js';
+import { createAuth, type Messaging } from './auth/auth.js';
 import type { AppConfig } from './config/config.js';
 
 export const AUTH_BASE_PATH = '/api/auth';
 
-export async function createApp(config: AppConfig, options: { mailer?: Mailer } = {}) {
-  const auth = await createAuth(config, options.mailer);
+export async function createApp(config: AppConfig, messaging: Messaging = {}) {
+  const auth = await createAuth(config, messaging);
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config, auth), {
     // Better Auth lee el cuerpo crudo: se monta antes de cualquier parser.
     bodyParser: false,

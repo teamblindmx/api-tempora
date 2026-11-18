@@ -22,7 +22,7 @@ NestJS 12 con `@nestjs/platform-express` (Express 5.3), Node 22 y TypeScript 6.0
 | typescript                                 | 6.0.2                  |
 | prisma, @prisma/client, @prisma/adapter-pg | 7.10.1                 |
 | better-auth, @better-auth/core             | 1.7.17                 |
-| @teamblind/axeda-core, -better-auth        | 0.1.0-alpha.1          |
+| @teamblind/axeda-core, -better-auth        | 0.1.0-alpha.2          |
 | nestjs-cls                                 | 7.0.2                  |
 | zod / nestjs-zod / @nestjs/swagger         | 4.6.7 / 5.6.0 / 12.1.2 |
 | vitest / vite                              | 4.1.2 / 8.3.8          |

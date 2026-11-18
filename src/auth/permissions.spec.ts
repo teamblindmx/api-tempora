@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PERMISSIONS, ROLES } from './permissions.js';
+import { GRANT_POLICY, PERMISSIONS, ROLES } from './permissions.js';
 
 describe('roles', () => {
   it('hay cinco roles de Tempora (el dueño de la plataforma es el administrador global de Axeda)', () => {
@@ -23,9 +23,19 @@ describe('roles', () => {
     expect(worker).not.toContain(PERMISSIONS.overtimeAuthorize);
   });
 
-  it('ni el líder ni el encargado pueden otorgar roles', () => {
-    for (const role of [ROLES.leader, ROLES['acting-leader'], ROLES.worker]) {
+  it('ni el encargado ni el trabajador pueden otorgar roles', () => {
+    for (const role of [ROLES['acting-leader'], ROLES.worker]) {
       expect(role.permissions.some((p: string) => p.startsWith('axeda:'))).toBe(false);
     }
+  });
+
+  it('el líder cubre los permisos del trabajador y del encargado (Axeda lo exige para otorgarlos)', () => {
+    const leader = new Set<string>(ROLES.leader.permissions);
+    for (const p of [...ROLES.worker.permissions, ...ROLES['acting-leader'].permissions])
+      expect(leader.has(p), p).toBe(true);
+  });
+
+  it('todo rol tiene una regla de quién lo otorga', () => {
+    expect(Object.keys(GRANT_POLICY).toSorted()).toEqual(Object.keys(ROLES).toSorted());
   });
 });

@@ -1,4 +1,4 @@
-// Tablas de Tempora (esquema app). Las compañías, negocios, sedes (alpha.2) y usuarios viven en Axeda,
+// Tablas de Tempora (esquema app). Las compañías, negocios, sedes y usuarios viven en Axeda,
 // esquema auth: aquí se guardan sus identificadores como texto, sin claves foráneas entre esquemas
 // (ADR 0006, ADR 0007).
 //
@@ -17,20 +17,19 @@ datasource db {
   schemas  = ["app"]
 }
 
-/// Datos de Tempora de una sede: ubicación y radio para validar el marcado.
-/// axedaSiteId se llena cuando Axeda publique las sedes (alpha.2).
+/// Datos de Tempora de una sede de Axeda: ubicación y radio para validar el marcado (ADR 0007).
+/// La sede (nombre, estado, negocio) vive en Axeda; id es el id de la sede en Axeda. company_id y
+/// business_id se copian de Axeda al guardar, leídos de su base, nunca del cliente.
 model Site {
-  id          String   @id @default(uuid()) @db.Uuid
-  companyId   String   @map("company_id")
-  businessId  String?  @map("business_id")
-  axedaSiteId String?  @unique @map("axeda_site_id")
-  name        String
-  latitude    Decimal  @db.Decimal(9, 6)
-  longitude   Decimal  @db.Decimal(9, 6)
-  radiusM     Int      @default(500) @map("radius_m")
-  timezone    String   @default("America/Mexico_City")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id         String   @id
+  companyId  String   @map("company_id")
+  businessId String?  @map("business_id")
+  latitude   Decimal  @db.Decimal(9, 6)
+  longitude  Decimal  @db.Decimal(9, 6)
+  radiusM    Int      @default(500) @map("radius_m")
+  timezone   String   @default("America/Mexico_City")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   employees EmployeeProfile[]
 
@@ -45,7 +44,7 @@ model EmployeeProfile {
   id         String   @id @default(uuid()) @db.Uuid
   companyId  String   @map("company_id")
   userId     String   @map("user_id")
-  siteId     String?  @map("site_id") @db.Uuid
+  siteId     String?  @map("site_id")
   department String?
   position   String?
   photoUrl   String?  @map("photo_url")

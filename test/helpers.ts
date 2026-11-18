@@ -1,5 +1,5 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import type { Actor, Company } from '@teamblind/axeda-core';
+import type { Actor, AssignmentScope, Company, Site } from '@teamblind/axeda-core';
 import pg from 'pg';
 import request from 'supertest';
 import { inject } from 'vitest';
@@ -51,16 +51,28 @@ export interface TestApp {
   server: ReturnType<NestExpressApplication['getHttpServer']>;
   auth: AuthService;
   openapi: Record<string, unknown>;
+  /** Último correo (verificación o invitación) por destinatario: el enlace. */
   outbox: Map<string, string>;
+  /** Último SMS por número. */
+  sms: Map<string, string>;
   close(): Promise<void>;
 }
 
 export async function startApp(): Promise<TestApp> {
   const outbox = new Map<string, string>();
+  const sms = new Map<string, string>();
   const { app, auth, openapi } = await createApp(testConfig(), {
     mailer: {
       async sendVerificationEmail(to, url) {
         outbox.set(to, url);
+      },
+      async sendInvitationEmail(to, url) {
+        outbox.set(to, url);
+      },
+    },
+    sms: {
+      async send(to, text) {
+        sms.set(to, text);
       },
     },
   });
@@ -70,56 +82,103 @@ export async function startApp(): Promise<TestApp> {
     auth,
     openapi: openapi as never,
     outbox,
+    sms,
     close: () => app.close(),
   };
+}
+
+/** Espera hasta 2 s a que llegue un mensaje (Better Auth y Axeda pueden enviarlo en segundo plano). */
+export async function waitFor(box: Map<string, string>, key: string): Promise<string> {
+  for (let i = 0; i < 40; i++) {
+    const v = box.get(key);
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`No llegó el mensaje para ${key}`);
 }
 
 export interface TestUser {
   email: string;
   userId: string;
   cookie: string;
+  /** Las cabeceras Set-Cookie del inicio de sesión, tal como llegaron. */
+  setCookie: string[];
   actor: Actor;
 }
+
+const cookieOf = (res: request.Response) =>
+  (res.headers['set-cookie'] as unknown as string[]).map((c) => c.split(';')[0]).join('; ');
 
 /** Registro, verificación de correo e inicio de sesión, por HTTP como lo haría el frontend. */
 export async function createUser(t: TestApp, name: string): Promise<TestUser> {
   // Better Auth guarda el correo en minúsculas.
   const email = `${name}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}@example.com`.toLowerCase();
   const password = 'contraseña-de-prueba-123';
+  t.outbox.delete(email);
   const up = await request(t.server)
     .post('/api/auth/sign-up/email')
     .set('Origin', FRONTEND)
     .send({ email, password, name });
   if (up.status !== 200) throw new Error(`sign-up ${up.status}: ${up.text}`);
-  // Better Auth puede enviar el correo en segundo plano: se espera hasta 2 s.
-  let link = t.outbox.get(email);
-  for (let i = 0; !link && i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    link = t.outbox.get(email);
-  }
-  if (!link) throw new Error('No llegó el correo de verificación');
-  const u = new URL(link);
+  const u = new URL(await waitFor(t.outbox, email));
   await request(t.server).get(u.pathname + u.search);
   const res = await request(t.server)
     .post('/api/auth/sign-in/email')
     .set('Origin', FRONTEND)
     .send({ email, password });
   if (res.status !== 200) throw new Error(`sign-in ${res.status}: ${res.text}`);
-  const cookie = (res.headers['set-cookie'] as unknown as string[]).map((c) => c.split(';')[0]).join('; ');
   const userId = res.body.user.id as string;
-  return { email, userId, cookie, actor: { userId } };
+  return {
+    email,
+    userId,
+    cookie: cookieOf(res),
+    setCookie: res.headers['set-cookie'] as unknown as string[],
+    actor: { userId },
+  };
+}
+
+/** Registro o inicio de sesión por teléfono (código por SMS). */
+export async function signInByPhone(t: TestApp, phoneNumber: string): Promise<TestUser> {
+  t.sms.delete(phoneNumber);
+  const sent = await request(t.server)
+    .post('/api/auth/phone-number/send-otp')
+    .set('Origin', FRONTEND)
+    .send({ phoneNumber });
+  if (sent.status !== 200) throw new Error(`send-otp ${sent.status}: ${sent.text}`);
+  const code = /(\d{6})/.exec(await waitFor(t.sms, phoneNumber))?.[1];
+  const res = await request(t.server)
+    .post('/api/auth/phone-number/verify')
+    .set('Origin', FRONTEND)
+    .send({ phoneNumber, code });
+  if (res.status !== 200) throw new Error(`verify ${res.status}: ${res.text}`);
+  const userId = res.body.user.id as string;
+  return {
+    email: res.body.user.email as string,
+    userId,
+    cookie: cookieOf(res),
+    setCookie: res.headers['set-cookie'] as unknown as string[],
+    actor: { userId },
+  };
 }
 
 export interface Tenants {
   owner: TestUser;
   companyA: Company;
   companyB: Company;
+  /** Sedes de Axeda: dos en A, una en B. */
+  siteA1: Site;
+  siteA2: Site;
+  siteB1: Site;
   adminA: TestUser;
   adminB: TestUser;
-  workerA: TestUser;
+  /** Líder de la sede A1. */
+  leaderA1: TestUser;
+  /** Trabajador de la sede A1. */
+  workerA1: TestUser;
+  roleId(key: RoleKey): string;
 }
 
-/** Dueño de la plataforma, dos compañías y sus usuarios, creados con Axeda como lo haría el gestor. */
+/** Dueño de la plataforma, dos compañías con sedes y sus usuarios, creados con Axeda como lo haría el gestor. */
 export async function createTenants(t: TestApp): Promise<Tenants> {
   const { axeda } = t.auth;
   const owner = await createUser(t, 'owner');
@@ -134,6 +193,9 @@ export async function createTenants(t: TestApp): Promise<Tenants> {
     slug: `beta-${suffix}`,
     name: 'Beta Manufacturas',
   });
+  const siteA1 = await axeda.sites.create(owner.actor, companyA.id, { slug: 'gdl', name: 'Guadalajara' });
+  const siteA2 = await axeda.sites.create(owner.actor, companyA.id, { slug: 'mty', name: 'Monterrey' });
+  const siteB1 = await axeda.sites.create(owner.actor, companyB.id, { slug: 'son', name: 'Sonora' });
 
   const roles = (await axeda.roles.list(owner.actor, { limit: 100 })).items;
   const roleId = (key: RoleKey) => {
@@ -141,20 +203,18 @@ export async function createTenants(t: TestApp): Promise<Tenants> {
     if (!r) throw new Error(`Rol ${key} no sincronizado`);
     return r.id;
   };
-  const assign = (u: TestUser, key: RoleKey, companyId: string) =>
-    axeda.assignments.assign(owner.actor, {
-      userId: u.userId,
-      roleId: roleId(key),
-      scope: { type: 'company', id: companyId },
-    });
+  const assign = (u: TestUser, key: RoleKey, scope: AssignmentScope) =>
+    axeda.assignments.assign(owner.actor, { userId: u.userId, roleId: roleId(key), scope });
 
   const adminA = await createUser(t, 'adminA');
   const adminB = await createUser(t, 'adminB');
-  const workerA = await createUser(t, 'workerA');
-  await assign(adminA, 'company-admin', companyA.id);
-  await assign(adminB, 'company-admin', companyB.id);
-  await assign(workerA, 'worker', companyA.id);
-  return { owner, companyA, companyB, adminA, adminB, workerA };
+  const leaderA1 = await createUser(t, 'leaderA1');
+  const workerA1 = await createUser(t, 'workerA1');
+  await assign(adminA, 'company-admin', { type: 'company', id: companyA.id });
+  await assign(adminB, 'company-admin', { type: 'company', id: companyB.id });
+  await assign(leaderA1, 'leader', { type: 'site', id: siteA1.id });
+  await assign(workerA1, 'worker', { type: 'site', id: siteA1.id });
+  return { owner, companyA, companyB, siteA1, siteA2, siteB1, adminA, adminB, leaderA1, workerA1, roleId };
 }
 
 /** Peticiones con la sesión de un usuario, desde el frontend de confianza. */
@@ -163,5 +223,6 @@ export function as(t: TestApp, user: TestUser) {
   return {
     get: (path: string) => withAuth(request(t.server).get(path)),
     post: (path: string, body?: object) => withAuth(request(t.server).post(path)).send(body ?? {}),
+    put: (path: string, body?: object) => withAuth(request(t.server).put(path)).send(body ?? {}),
   };
 }

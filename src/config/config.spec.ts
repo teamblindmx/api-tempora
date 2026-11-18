@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from './config.js';
+import { appUrl, ConfigError, loadConfig } from './config.js';
 
 const valid = {
   DATABASE_URL: 'postgresql://tempora_app:app@localhost:5432/tempora',
@@ -33,8 +33,18 @@ describe('loadConfig', () => {
 
   it('exige https en producción', () => {
     expect(() => loadConfig({ ...valid, NODE_ENV: 'production' })).toThrow(/https/);
-    expect(
-      loadConfig({ ...valid, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' }).NODE_ENV,
-    ).toBe('production');
+  });
+
+  it('en producción no acepta el SMS de consola', () => {
+    expect(() =>
+      loadConfig({ ...valid, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' }),
+    ).toThrow(/SMS_PROVIDER/);
+  });
+
+  it('la URL del frontend sale de APP_URL o del primer origen de confianza', () => {
+    expect(appUrl(loadConfig(valid))).toBe('http://localhost:5173');
+    expect(appUrl(loadConfig({ ...valid, APP_URL: 'https://app.tempora.mx' }))).toBe(
+      'https://app.tempora.mx',
+    );
   });
 });

@@ -48,6 +48,7 @@ export const TENANT_DATA_PERMISSIONS: ReadonlySet<Permission> = new Set([
 
 const P = PERMISSIONS;
 const leader = [
+  P.attendanceMark,
   P.siteRead,
   P.employeeRead,
   P.attendanceRead,
@@ -63,8 +64,9 @@ const leader = [
  * en un alcance (compañía o negocio; sede cuando llegue alpha.2). El dueño de la plataforma es el
  * administrador global de Axeda (`npm run bootstrap:admin`), no un rol de aquí.
  *
- * Pendiente con el equipo de Axeda (ADR 0007): el líder aún no gestiona asignaciones ni invitaciones,
- * porque podría otorgar el rol de líder (riesgo de escalada lateral).
+ * El líder invita y asigna en su sede (alta de empleados y encargado). Axeda solo exige que quien
+ * otorga cubra los permisos del rol, así que un líder podría otorgar el rol de líder: lo impide
+ * GRANT_POLICY (src/auth/grant-policy.ts) antes de que la petición llegue a Axeda.
  */
 export const ROLES = {
   'company-admin': {
@@ -86,7 +88,10 @@ export const ROLES = {
       'axeda:invitation:manage',
     ],
   },
-  leader: { name: 'Líder', permissions: leader },
+  leader: {
+    name: 'Líder',
+    permissions: [...leader, 'axeda:assignment:manage', 'axeda:invitation:manage'],
+  },
   worker: { name: 'Trabajador', permissions: [P.attendanceMark, P.justificationWrite] },
   'acting-leader': {
     name: 'Encargado',
@@ -96,3 +101,19 @@ export const ROLES = {
 } as const satisfies Record<string, { name: string; description?: string; permissions: readonly string[] }>;
 
 export type RoleKey = keyof typeof ROLES;
+
+/** Nivel mínimo de quien otorga, en el lugar donde se otorga, para cada rol. */
+export type GrantLevel = 'site' | 'business' | 'company' | 'global';
+
+/**
+ * Quién puede otorgar cada rol, además de lo que exige Axeda (tener el permiso y cubrir el rol).
+ * Un líder (autoridad de sede) solo otorga trabajador y encargado; un administrador de negocio,
+ * hasta líder y administrador de negocio; un administrador de compañía, cualquiera.
+ */
+export const GRANT_POLICY: Record<RoleKey, GrantLevel> = {
+  worker: 'site',
+  'acting-leader': 'site',
+  leader: 'business',
+  'business-admin': 'business',
+  'company-admin': 'company',
+};

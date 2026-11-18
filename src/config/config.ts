@@ -26,6 +26,14 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v ? v : undefined)),
+  /** URL del frontend, para los enlaces de las invitaciones. Por omisión, el primer TRUSTED_ORIGINS. */
+  APP_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v : undefined))
+    .pipe(z.url().optional()),
+  /** Proveedor de SMS. Solo existe "console" (imprime el código) hasta que se elija uno real. */
+  SMS_PROVIDER: z.enum(['console']).default('console'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   AUTH_POOL_MAX: z.coerce.number().int().min(1).max(100).default(5),
 });
@@ -45,7 +53,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (config.NODE_ENV === 'production' && !config.BETTER_AUTH_URL.startsWith('https://')) {
     throw new ConfigError('Configuración inválida:\n  - BETTER_AUTH_URL: en producción debe usar https');
   }
+  if (config.NODE_ENV === 'production' && config.SMS_PROVIDER === 'console') {
+    throw new ConfigError(
+      'Configuración inválida:\n  - SMS_PROVIDER: "console" no envía mensajes; en producción hace falta un proveedor real',
+    );
+  }
   return config;
+}
+
+/** URL base del frontend. */
+export function appUrl(config: AppConfig): string {
+  return config.APP_URL ?? config.TRUSTED_ORIGINS[0]!;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');

@@ -7,6 +7,8 @@ export interface RequestContext extends ClsStore {
   actor?: Actor;
   /** Compañía de la ruta, ya validada contra Axeda. Es la que fija RLS. */
   companyId?: string;
-  /** Negocio, si la ruta es de negocio. Su compañía se leyó de la base de datos. */
+  /** Negocio, si la ruta es de negocio (o de una sede que cuelga de uno). Leído de la base. */
   businessId?: string;
+  /** Sede (id de Axeda), si la ruta es de sede. Su compañía y negocio se leyeron de la base. */
+  siteId?: string;
 }
