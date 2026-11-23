@@ -23,6 +23,7 @@ import { checkLocation, type Coordinates } from './rules/location.js';
 import { canSelfCheckOut, DAILY_CODE_DIGITS, evaluateCheckOut, locationReview } from './rules/marking.js';
 import { overtimeMinutes } from './rules/overtime.js';
 import { localDate, scheduledEnd } from './rules/workday.js';
+import { NoticeService } from './notices.service.js';
 import { dayOf } from './work-calendar.js';
 
 const MIN = 60_000;
@@ -50,6 +51,7 @@ export class AttendanceService {
   constructor(
     private readonly db: TenantDb,
     private readonly audit: AuditService,
+    private readonly notices: NoticeService,
     private readonly cls: ClsService<RequestContext>,
     private readonly clock: Clock,
   ) {}
@@ -214,6 +216,8 @@ export class AttendanceService {
             reviewReasons,
           },
         });
+        // Regla 8: lo que queda por revisar se avisa al líder de la sede.
+        if (reviewReasons.length > 0) await this.notices.syncRecord(tx, record, now, null);
         return toRecordDto(record, today, shift);
       });
     } catch (e) {
@@ -326,6 +330,7 @@ export class AttendanceService {
         },
         ...(reason ? { reason } : {}),
       });
+      if (result.reviewReasons.length > 0) await this.notices.syncRecord(tx, { ...open, ...data }, now, null);
       return toRecordDto({ ...open, ...data }, today, shift, { timezone: site.timezone, now, authorization });
     });
   }

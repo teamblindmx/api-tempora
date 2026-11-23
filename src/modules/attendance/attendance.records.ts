@@ -8,6 +8,7 @@ import {
 } from './attendance.schemas.js';
 import { recordStatus } from './rules/marking.js';
 import { authorizedEnd, overtimeMinutes } from './rules/overtime.js';
+import { needsReview } from './rules/review.js';
 import { workedMinutes } from './rules/panel.js';
 import { scheduledEnd, type Shift } from './rules/workday.js';
 
@@ -72,6 +73,12 @@ export type RecordView = Pick<
   | 'checkOutBy'
   | 'checkOutComment'
   | 'reviewReasons'
+  | 'reviewedReasons'
+  | 'reviewedAt'
+  | 'reviewedBy'
+  | 'reviewComment'
+  | 'correctedAt'
+  | 'correctedBy'
 >;
 
 const source = (s: string | null) => (s === 'self' || s === 'manual' ? s : null);
@@ -113,8 +120,14 @@ export function toRecordDto(
     checkOutBy: r.checkOutBy,
     checkOutComment: r.checkOutComment,
     workedMinutes: workedMinutes(r.checkInAt, r.checkOutAt),
-    needsReview: r.reviewReasons.length > 0,
+    needsReview: needsReview(r.reviewReasons, r.reviewedReasons),
     reviewReasons: r.reviewReasons,
+    reviewedReasons: r.reviewedReasons,
+    reviewedAt: r.reviewedAt?.toISOString() ?? null,
+    reviewedBy: r.reviewedBy,
+    reviewComment: r.reviewComment,
+    correctedAt: r.correctedAt?.toISOString() ?? null,
+    correctedBy: r.correctedBy,
     overtime:
       shift && ot ? overtimeOf(workDate, shift, ot, r.checkOutAt, status === 'open' && !r.checkOutAt) : null,
   };

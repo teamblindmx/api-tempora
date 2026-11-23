@@ -45,6 +45,8 @@ model Site {
   holidays       Holiday[]
   justifications Justification[]
   overtime       OvertimeAuthorization[]
+  corrections    AttendanceCorrection[]
+  notices        Notice[]
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -162,14 +164,25 @@ model AttendanceRecord {
   checkInCodeExpired Boolean @default(false) @map("check_in_code_expired")
 
   /// Motivos de "por revisar" (ver rules/marking.ts). Vacío: no hay nada que revisar.
-  reviewReasons String[] @default([]) @map("review_reasons")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  reviewReasons   String[]  @default([]) @map("review_reasons")
+  /// Motivos que el líder ya revisó (ADR 0015). Queda "por revisar" lo que esté en reviewReasons y
+  /// no aquí: si la salida agrega un motivo nuevo después de revisar la entrada, vuelve a la lista.
+  reviewedReasons String[]  @default([]) @map("reviewed_reasons")
+  reviewedAt      DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  reviewedBy      String?   @map("reviewed_by")
+  reviewComment   String?   @map("review_comment")
+  /// Última corrección de horas (el historial completo está en attendance_correction).
+  correctedAt     DateTime? @map("corrected_at") @db.Timestamptz(3)
+  correctedBy     String?   @map("corrected_by")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   // FK compuestas: una jornada nunca apunta a una sede o a un código de otra compañía.
-  site           Site            @relation(fields: [siteId, companyId], references: [id, companyId])
-  dailyCode      DailyCode?      @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
+  site           Site                   @relation(fields: [siteId, companyId], references: [id, companyId])
+  dailyCode      DailyCode?             @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
   justifications Justification[]
+  corrections    AttendanceCorrection[]
+  notices        Notice[]
 
   @@unique([id, companyId])
   @@unique([companyId, userId, workDate])
@@ -225,9 +238,11 @@ model Justification {
   /// Comentario del líder; obligatorio al rechazar.
   resolutionComment  String?   @map("resolution_comment")
 
-  site   Site              @relation(fields: [siteId, companyId], references: [id, companyId])
-  record AttendanceRecord? @relation(fields: [attendanceRecordId, companyId], references: [id, companyId])
+  site    Site              @relation(fields: [siteId, companyId], references: [id, companyId])
+  record  AttendanceRecord? @relation(fields: [attendanceRecordId, companyId], references: [id, companyId])
+  notices Notice[]
 
+  @@unique([id, companyId])
   @@unique([companyId, userId, workDate, kind])
   @@index([companyId, siteId, status])
   @@map("justification")
@@ -273,5 +288,61 @@ model PrivacyAcceptance {
 
   @@unique([companyId, userId, version])
   @@map("privacy_acceptance")
+  @@schema("app")
+}
+
+/// Corrección de la hora de entrada o de salida de una jornada ya registrada (regla 13, ADR 0015):
+/// quién, cuándo, por qué, y el valor anterior y el nuevo. Solo inserción: es el historial.
+model AttendanceCorrection {
+  id                 String    @id @default(uuid()) @db.Uuid
+  companyId          String    @map("company_id")
+  siteId             String    @map("site_id")
+  attendanceRecordId String    @map("attendance_record_id") @db.Uuid
+  /// El trabajador de la jornada.
+  userId             String    @map("user_id")
+  correctedBy        String    @map("corrected_by")
+  correctedAt        DateTime  @map("corrected_at") @db.Timestamptz(3)
+  checkInBefore      DateTime  @map("check_in_before") @db.Timestamptz(3)
+  checkInAfter       DateTime  @map("check_in_after") @db.Timestamptz(3)
+  checkOutBefore     DateTime? @map("check_out_before") @db.Timestamptz(3)
+  checkOutAfter      DateTime? @map("check_out_after") @db.Timestamptz(3)
+  comment            String
+
+  site   Site             @relation(fields: [siteId, companyId], references: [id, companyId])
+  record AttendanceRecord @relation(fields: [attendanceRecordId, companyId], references: [id, companyId])
+
+  @@index([companyId, attendanceRecordId])
+  @@map("attendance_correction")
+  @@schema("app")
+}
+
+/// Aviso para los líderes de una sede (regla 8, ADR 0015): una jornada quedó por revisar o llegó una
+/// justificación. Es de la sede, no de una persona: cuando un líder lo atiende, deja de estar
+/// pendiente para todos. Se atiende solo al revisar la jornada o resolver la justificación, o a mano.
+/// Las notificaciones push llegan después del 1 de enero y saldrán de aquí.
+model Notice {
+  id                 String    @id @default(uuid()) @db.Uuid
+  companyId          String    @map("company_id")
+  siteId             String    @map("site_id")
+  /// "attendance-review" o "justification".
+  kind               String
+  /// El trabajador del que trata el aviso.
+  userId             String    @map("user_id")
+  workDate           DateTime  @map("work_date") @db.Date
+  attendanceRecordId String?   @map("attendance_record_id") @db.Uuid
+  justificationId    String?   @map("justification_id") @db.Uuid
+  /// Motivos de revisión o tipo de justificación, para mostrar el aviso sin otra consulta.
+  detail             String[]  @default([])
+  createdAt          DateTime  @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  readAt             DateTime? @map("read_at") @db.Timestamptz(3)
+  readBy             String?   @map("read_by")
+
+  site          Site              @relation(fields: [siteId, companyId], references: [id, companyId])
+  record        AttendanceRecord? @relation(fields: [attendanceRecordId, companyId], references: [id, companyId])
+  justification Justification?    @relation(fields: [justificationId, companyId], references: [id, companyId])
+
+  @@index([companyId, siteId, readAt])
+  @@map("notice")
   @@schema("app")
 }
