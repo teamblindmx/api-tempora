@@ -21,23 +21,30 @@ datasource db {
 /// La sede (nombre, estado, negocio) vive en Axeda; id es el id de la sede en Axeda. company_id y
 /// business_id se copian de Axeda al guardar, leídos de su base, nunca del cliente.
 model Site {
-  id         String   @id
-  companyId  String   @map("company_id")
-  businessId String?  @map("business_id")
-  latitude   Decimal  @db.Decimal(9, 6)
-  longitude  Decimal  @db.Decimal(9, 6)
-  radiusM    Int      @default(500) @map("radius_m")
-  timezone   String   @default("America/Mexico_City")
+  id               String   @id
+  companyId        String   @map("company_id")
+  businessId       String?  @map("business_id")
+  latitude         Decimal  @db.Decimal(9, 6)
+  longitude        Decimal  @db.Decimal(9, 6)
+  radiusM          Int      @default(500) @map("radius_m")
+  timezone         String   @default("America/Mexico_City")
   /// Horario oficial de la sede, "HH:MM" en su zona horaria. Null mientras no se defina
   /// (pregunta abierta 4 del PRD): sin cierre, la salida no se clasifica por horario.
-  shiftStart String?  @map("shift_start")
-  shiftEnd   String?  @map("shift_end")
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  shiftStart       String?  @map("shift_start")
+  shiftEnd         String?  @map("shift_end")
+  /// Minutos de tolerancia después de la entrada oficial antes de contar retardo (ADR 0014).
+  lateToleranceMin Int      @default(10) @map("late_tolerance_min")
+  /// Días de descanso semanal de la sede: 0 = domingo ... 6 = sábado (regla 16; por cuadrilla, después).
+  restDays         Int[]    @default([0]) @map("rest_days")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  employees  EmployeeProfile[]
-  dailyCodes DailyCode[]
-  attendance AttendanceRecord[]
+  employees      EmployeeProfile[]
+  dailyCodes     DailyCode[]
+  attendance     AttendanceRecord[]
+  holidays       Holiday[]
+  justifications Justification[]
+  overtime       OvertimeAuthorization[]
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -146,18 +153,125 @@ model AttendanceRecord {
   checkOutBy        String?   @map("check_out_by")
   checkOutComment   String?   @map("check_out_comment")
 
+  /// Retardo (regla 10, ADR 0014), decidido al registrar la entrada con el horario y la tolerancia
+  /// de ese momento. No cuenta en un día de descanso o festivo.
+  checkInLate        Boolean @default(false) @map("check_in_late")
+  /// Minutos después de la entrada oficial (0 si llegó antes). Null si la sede no tenía horario.
+  checkInLateMinutes Int?    @map("check_in_late_minutes")
+  /// "Registrar entrada tardía": entró con un código de hoy que ya había vencido (regla 10).
+  checkInCodeExpired Boolean @default(false) @map("check_in_code_expired")
+
   /// Motivos de "por revisar" (ver rules/marking.ts). Vacío: no hay nada que revisar.
   reviewReasons String[] @default([]) @map("review_reasons")
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   // FK compuestas: una jornada nunca apunta a una sede o a un código de otra compañía.
-  site      Site      @relation(fields: [siteId, companyId], references: [id, companyId])
-  dailyCode DailyCode? @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
+  site           Site            @relation(fields: [siteId, companyId], references: [id, companyId])
+  dailyCode      DailyCode?      @relation(fields: [dailyCodeId, companyId], references: [id, companyId])
+  justifications Justification[]
 
+  @@unique([id, companyId])
   @@unique([companyId, userId, workDate])
   @@index([companyId, siteId, workDate])
   @@index([companyId, workDate])
   @@map("attendance_record")
+  @@schema("app")
+}
+
+/// Día festivo (regla 15). Sin sede, vale en todas las sedes de la compañía; con sede, solo en esa.
+/// Es configuración, no evidencia: se puede borrar (queda en la auditoría).
+model Holiday {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @map("company_id")
+  siteId    String?  @map("site_id")
+  date      DateTime @db.Date
+  name      String
+  /// "statutory" (art. 74 de la LFT, cargado por la API) o "custom" (lo agregó un administrador).
+  source    String   @default("custom")
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  site Site? @relation(fields: [siteId, companyId], references: [id, companyId])
+
+  /// NULLS NOT DISTINCT (a mano en la migración): un solo festivo de compañía por fecha.
+  @@unique([companyId, siteId, date])
+  @@index([companyId, date])
+  @@map("holiday")
+  @@schema("app")
+}
+
+/// Justificación de un retardo, una salida anticipada o una falta (regla 12, versión simple): el
+/// trabajador la escribe y el líder la aprueba o la rechaza. Una por día y tipo; el rechazo es final
+/// hasta que exista la disputa con Recursos Humanos (después del 1 de enero). No se borra.
+model Justification {
+  id                 String    @id @default(uuid()) @db.Uuid
+  companyId          String    @map("company_id")
+  siteId             String    @map("site_id")
+  /// El trabajador (usuario de Axeda).
+  userId             String    @map("user_id")
+  workDate           DateTime  @map("work_date") @db.Date
+  /// "late", "early-exit" o "absence".
+  kind               String
+  /// La jornada que justifica. Null en una falta.
+  attendanceRecordId String?   @map("attendance_record_id") @db.Uuid
+  reason             String
+  submittedBy        String    @map("submitted_by")
+  submittedAt        DateTime  @map("submitted_at") @db.Timestamptz(3)
+  /// "pending", "approved" o "rejected".
+  status             String    @default("pending")
+  resolvedBy         String?   @map("resolved_by")
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz(3)
+  /// Comentario del líder; obligatorio al rechazar.
+  resolutionComment  String?   @map("resolution_comment")
+
+  site   Site              @relation(fields: [siteId, companyId], references: [id, companyId])
+  record AttendanceRecord? @relation(fields: [attendanceRecordId, companyId], references: [id, companyId])
+
+  @@unique([companyId, userId, workDate, kind])
+  @@index([companyId, siteId, status])
+  @@map("justification")
+  @@schema("app")
+}
+
+/// Autorización de horas extra (regla 9): el líder la da antes o en vivo, hasta una hora (`until`) o
+/// como jornada abierta (sin `until`) que él cierra. Lo trabajado después del cierre de la
+/// autorización es "tiempo no autorizado". Una por trabajador y día. Solo horas, no dinero.
+model OvertimeAuthorization {
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @map("company_id")
+  siteId       String    @map("site_id")
+  userId       String    @map("user_id")
+  workDate     DateTime  @map("work_date") @db.Date
+  /// Hasta qué hora. Null: jornada abierta, hasta que el líder la cierre.
+  until        DateTime? @db.Timestamptz(3)
+  reason       String
+  authorizedBy String    @map("authorized_by")
+  authorizedAt DateTime  @map("authorized_at") @db.Timestamptz(3)
+  closedBy     String?   @map("closed_by")
+  closedAt     DateTime? @map("closed_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  site Site @relation(fields: [siteId, companyId], references: [id, companyId])
+
+  @@unique([companyId, userId, workDate])
+  @@index([companyId, siteId, workDate])
+  @@map("overtime_authorization")
+  @@schema("app")
+}
+
+/// Aceptación del aviso de privacidad (requisito no funcional del PRD): quién, qué versión y cuándo.
+/// Por compañía, porque el aviso es del patrón. Solo inserción: una versión nueva pide aceptar de nuevo.
+model PrivacyAcceptance {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @map("company_id")
+  userId     String   @map("user_id")
+  version    String
+  acceptedAt DateTime @map("accepted_at") @db.Timestamptz(3)
+  ip         String?
+  userAgent  String?  @map("user_agent")
+
+  @@unique([companyId, userId, version])
+  @@map("privacy_acceptance")
   @@schema("app")
 }

@@ -1,8 +1,19 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, StreamableFile } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiOkResponse, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { ZodResponse } from 'nestjs-zod';
 import { PERMISSIONS } from '../../auth/permissions.js';
 import { RequirePermission } from '../../auth/require-permission.decorator.js';
+import { PrivacyAcceptedGuard } from '../privacy/privacy.module.js';
 import {
   AttendanceRecordDto,
   CalendarDto,
@@ -71,6 +82,7 @@ class LeaderController {
   /** Mi calendario del mes en esta sede (`?month=YYYY-MM`). */
   @Get('me/calendar')
   @RequirePermission(PERMISSIONS.attendanceMark, { site: 'siteId' })
+  @UseGuards(PrivacyAcceptedGuard)
   @ZodResponse({ type: CalendarDto })
   myCalendar(@Param('siteId') _siteId: string, @Query() query: CalendarQueryDto) {
     return this.leader.calendar(null, query.month);

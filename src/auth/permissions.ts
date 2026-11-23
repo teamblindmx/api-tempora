@@ -57,6 +57,8 @@ const leader = [
   P.dailyCodeShow,
   P.overtimeAuthorize,
   P.justificationWrite,
+  // Aprueba o rechaza las justificaciones de su sede (regla 12, versión simple; ADR 0014).
+  P.justificationResolve,
 ];
 
 /**

@@ -17,9 +17,13 @@ import {
   toDate,
   toRecordDto,
 } from './attendance.records.js';
+import { EXIT_REVIEW_THRESHOLD_MIN } from './rules/exit.js';
+import { evaluateLateness } from './rules/lateness.js';
 import { checkLocation, type Coordinates } from './rules/location.js';
 import { canSelfCheckOut, DAILY_CODE_DIGITS, evaluateCheckOut, locationReview } from './rules/marking.js';
+import { overtimeMinutes } from './rules/overtime.js';
 import { localDate, scheduledEnd } from './rules/workday.js';
+import { dayOf } from './work-calendar.js';
 
 const MIN = 60_000;
 
@@ -63,8 +67,10 @@ export class AttendanceService {
     const now = this.clock.now();
     return this.db.run(async (tx, companyId) => {
       await siteOrFail(tx, companyId, siteId);
+      // createdAt <= now: si el reloj del servidor retrocede (cambio de hora del sistema, pruebas),
+      // no se vence un código "del futuro" antes de crearse (lo impediría daily_code_window).
       await tx.dailyCode.updateMany({
-        where: { companyId, siteId, expiresAt: { gt: now } },
+        where: { companyId, siteId, expiresAt: { gt: now }, createdAt: { lte: now } },
         data: { expiresAt: now },
       });
       const code = await tx.dailyCode.create({
@@ -102,34 +108,73 @@ export class AttendanceService {
 
   /**
    * Entrada (reglas 1 a 4). El código debe ser el vigente de la sede. La ubicación nunca rechaza:
-   * fuera del radio o sin ubicación, la jornada se guarda "por revisar" con la distancia real.
+   * fuera del radio o sin ubicación, la jornada se guarda "por revisar" con la distancia real. El
+   * retardo se decide aquí, con el horario y la tolerancia de la sede (regla 10, ADR 0014).
    */
-  async checkIn(code: string, location: Location) {
+  checkIn(code: string, location: Location) {
+    return this.register(code, location, false);
+  }
+
+  /**
+   * "Registrar entrada tardía" (regla 10): el código de hoy ya venció. Pide un código de la sede
+   * generado hoy (no basta con ninguno: el trabajador tuvo que estar ahí para verlo) y queda marcado.
+   */
+  lateCheckIn(code: string, location: Location) {
+    return this.register(code, location, true);
+  }
+
+  private async register(code: string, location: Location, late: boolean) {
     const { siteId, userId } = this.context();
     const now = this.clock.now();
     try {
       return await this.db.run(async (tx, companyId) => {
         const site = await siteOrFail(tx, companyId, siteId);
+        const today = localDate(now, site.timezone);
         const dailyCode = await tx.dailyCode.findFirst({
           where: { companyId, siteId, code },
           orderBy: { createdAt: 'desc' },
         });
         if (!dailyCode)
           fail(HttpStatus.UNPROCESSABLE_ENTITY, ATTENDANCE_ERRORS.codeInvalid, 'Código incorrecto');
-        if (dailyCode.expiresAt <= now) {
+        const expired = dailyCode.expiresAt <= now;
+        if (!late && expired) {
           fail(
             HttpStatus.UNPROCESSABLE_ENTITY,
             ATTENDANCE_ERRORS.codeExpired,
-            'El código ya venció. Pide a tu líder uno nuevo.',
+            'El código ya venció. Usa "Registrar entrada tardía" o pide a tu líder uno nuevo.',
+          );
+        }
+        if (late && !expired) {
+          fail(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            ATTENDANCE_ERRORS.codeStillValid,
+            'El código sigue vigente: registra tu entrada normal',
+          );
+        }
+        if (late && localDate(dailyCode.createdAt, site.timezone) !== today) {
+          fail(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            ATTENDANCE_ERRORS.codeNotToday,
+            'Ese código no es de hoy. Pide a tu líder el de hoy.',
           );
         }
 
-        const today = localDate(now, site.timezone);
         const existing = await tx.attendanceRecord.findFirst({
           where: { companyId, userId, workDate: toDate(today) },
         });
         if (existing) this.alreadyCheckedIn();
 
+        const shift = shiftOf(site);
+        const day = await dayOf(tx, companyId, site, today);
+        const lateness = evaluateLateness({
+          checkInAt: now,
+          workDate: today,
+          shift,
+          timeZone: site.timezone,
+          toleranceMin: site.lateToleranceMin,
+          workday: day.workday,
+          codeExpired: late,
+        });
         const check = checkLocation(siteCoords(site), location);
         const reviewReasons = locationReview('entry', check);
         const record = await tx.attendanceRecord.create({
@@ -144,12 +189,15 @@ export class AttendanceService {
             checkInAccuracyM: location?.accuracyM != null ? Math.round(location.accuracyM) : null,
             checkInDistanceM: check.distanceM,
             dailyCodeId: dailyCode.id,
+            checkInLate: lateness.late,
+            checkInLateMinutes: lateness.minutesAfterStart,
+            checkInCodeExpired: late,
             reviewReasons,
           },
         });
         // Sin coordenadas en la auditoría (dato personal): basta la distancia.
         await this.audit.record(tx, companyId, {
-          action: 'attendance.check-in',
+          action: late ? 'attendance.late-check-in' : 'attendance.check-in',
           targetType: 'attendance-record',
           targetId: record.id,
           after: {
@@ -159,10 +207,14 @@ export class AttendanceService {
             checkInAt: now.toISOString(),
             dailyCodeId: dailyCode.id,
             distanceM: check.distanceM,
+            late: lateness.late,
+            lateMinutes: lateness.minutesAfterStart,
+            codeExpired: late,
+            dayType: day.dayType,
             reviewReasons,
           },
         });
-        return toRecordDto(record, today, shiftOf(site));
+        return toRecordDto(record, today, shift);
       });
     } catch (e) {
       // Dos entradas simultáneas del mismo trabajador: la segunda choca con el índice único.
@@ -215,10 +267,21 @@ export class AttendanceService {
       const workDate = fromDate(open.workDate);
 
       const check = checkLocation(siteCoords(site), location);
+      const end = shift ? scheduledEnd(workDate, shift, site.timezone) : null;
+      const authorization = await tx.overtimeAuthorization.findFirst({
+        where: { companyId, userId, workDate: open.workDate },
+      });
+      // Regla 8: una salida tarde no va a revisión si las horas extra estaban autorizadas (lo que
+      // queda sin autorizar no pasa del margen de 30 minutos).
+      const overtimeAuthorized =
+        !!end &&
+        !!authorization &&
+        now > end &&
+        overtimeMinutes(end, now, authorization).unauthorizedMinutes <= EXIT_REVIEW_THRESHOLD_MIN;
       const result = evaluateCheckOut({
         now,
-        scheduledEnd: shift ? scheduledEnd(workDate, shift, site.timezone) : null,
-        overtimeAuthorized: false,
+        scheduledEnd: end,
+        overtimeAuthorized,
         location: check,
         reason,
       });
@@ -263,7 +326,7 @@ export class AttendanceService {
         },
         ...(reason ? { reason } : {}),
       });
-      return toRecordDto({ ...open, ...data }, today, shift);
+      return toRecordDto({ ...open, ...data }, today, shift, { timezone: site.timezone, now, authorization });
     });
   }
 
@@ -275,20 +338,34 @@ export class AttendanceService {
       const site = await siteOrFail(tx, companyId, siteId);
       const shift = shiftOf(site);
       const today = localDate(now, site.timezone);
-      const [record, open] = await Promise.all([
+      const [record, open, day] = await Promise.all([
         tx.attendanceRecord.findFirst({ where: { companyId, siteId, userId, workDate: toDate(today) } }),
         tx.attendanceRecord.findMany({
           where: { companyId, siteId, userId, checkOutAt: null, workDate: { lt: toDate(today) } },
           orderBy: { workDate: 'desc' },
           take: 31,
         }),
+        dayOf(tx, companyId, site, today),
       ]);
-      const earlier = open.map((r) => toRecordDto(r, today, shift));
+      const auths = await tx.overtimeAuthorization.findMany({
+        where: {
+          companyId,
+          userId,
+          workDate: { in: [toDate(today), ...open.slice(0, 1).map((r) => r.workDate)] },
+        },
+      });
+      const ot = (workDate: Date) => ({
+        timezone: site.timezone,
+        now,
+        authorization: auths.find((a) => a.workDate.getTime() === workDate.getTime()) ?? null,
+      });
+      const earlier = open.map((r) => toRecordDto(r, today, shift, ot(r.workDate)));
       return {
         today,
+        day,
         // Turno de noche: si hoy no ha entrado, se muestra la jornada de ayer que sigue abierta.
         record: record
-          ? toRecordDto(record, today, shift)
+          ? toRecordDto(record, today, shift, ot(record.workDate))
           : (earlier.find((r) => r.status === 'open') ?? null),
         pendingExits: earlier.filter((r) => r.status === 'pending-exit'),
       };

@@ -16,9 +16,9 @@ import { ClsServiceManager } from 'nestjs-cls';
 import { ZodResponse } from 'nestjs-zod';
 import { PERMISSIONS } from '../../auth/permissions.js';
 import { RequirePermission } from '../../auth/require-permission.decorator.js';
-import { Clock } from '../../common/clock.js';
 import type { RequestContext } from '../../tenancy/request-context.js';
 import { AuditModule } from '../audit/audit.module.js';
+import { PrivacyAcceptedGuard, PrivacyModule } from '../privacy/privacy.module.js';
 import {
   AttendanceRecordDto,
   CheckInDto,
@@ -29,9 +29,13 @@ import {
 } from './attendance.schemas.js';
 import { AttendanceService, toCodeDto } from './attendance.service.js';
 import { ExportService } from './export.service.js';
+import { HolidaysService } from './holidays.service.js';
+import { JustificationService } from './justification.service.js';
 import { LEADER_CONTROLLERS } from './leader.controllers.js';
 import { LeaderService } from './leader.service.js';
+import { OvertimeService } from './overtime.service.js';
 import { PeopleDirectory } from './people.js';
+import { RULES_CONTROLLERS } from './rules.controllers.js';
 
 /** Intentos de entrada por usuario y minuto. */
 export const CHECK_IN_LIMIT = 10;
@@ -82,16 +86,31 @@ class AttendanceController {
 
   @Post('check-in')
   @RequirePermission(PERMISSIONS.attendanceMark, { site: 'siteId' })
-  @UseGuards(PerUserThrottlerGuard)
+  @UseGuards(PrivacyAcceptedGuard, PerUserThrottlerGuard)
   @Throttle({ 'check-in': { limit: CHECK_IN_LIMIT, ttl: 60_000 } })
   @ZodResponse({ status: 201, type: AttendanceRecordDto })
   checkIn(@Param('siteId') _siteId: string, @Body() body: CheckInDto) {
     return this.attendance.checkIn(body.code, body.location);
   }
 
+  /**
+   * "Registrar entrada tardía" (regla 10): con un código de hoy que ya venció. Queda marcada
+   * (`checkInCodeExpired`) y, con horario, como retardo si pasó de la tolerancia. Comparte el tope
+   * de intentos con la entrada normal.
+   */
+  @Post('late-check-in')
+  @RequirePermission(PERMISSIONS.attendanceMark, { site: 'siteId' })
+  @UseGuards(PrivacyAcceptedGuard, PerUserThrottlerGuard)
+  @Throttle({ 'check-in': { limit: CHECK_IN_LIMIT, ttl: 60_000 } })
+  @ZodResponse({ status: 201, type: AttendanceRecordDto })
+  lateCheckIn(@Param('siteId') _siteId: string, @Body() body: CheckInDto) {
+    return this.attendance.lateCheckIn(body.code, body.location);
+  }
+
   @Post('check-out')
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.attendanceMark, { site: 'siteId' })
+  @UseGuards(PrivacyAcceptedGuard)
   @ZodResponse({ type: AttendanceRecordDto })
   checkOut(@Param('siteId') _siteId: string, @Body() body: CheckOutDto) {
     return this.attendance.checkOut(body.location, body.reason);
@@ -100,6 +119,7 @@ class AttendanceController {
   /** Mi jornada de hoy en esta sede (para mostrar el botón de entrada o de salida). */
   @Get('me')
   @RequirePermission(PERMISSIONS.attendanceMark, { site: 'siteId' })
+  @UseGuards(PrivacyAcceptedGuard)
   @ZodResponse({ type: MyAttendanceDto })
   mine(@Param('siteId') _siteId: string) {
     return this.attendance.mine();
@@ -108,12 +128,25 @@ class AttendanceController {
 
 /**
  * Jornada: código diario, entrada con ubicación y salida (semana 2); panel del líder, marcado
- * manual, calendario y exportación a Excel (semana 3). Las reglas viven en ./rules como funciones
- * puras.
+ * manual, calendario y exportación a Excel (semana 3); retardos, entrada tardía, justificaciones,
+ * horas extra, festivos y descansos (semanas 5 y 6). Las reglas viven en ./rules como funciones puras.
  */
 @Module({
-  imports: [AuditModule, ThrottlerModule.forRoot([{ name: 'check-in', limit: CHECK_IN_LIMIT, ttl: 60_000 }])],
-  controllers: [DailyCodeController, AttendanceController, ...LEADER_CONTROLLERS],
-  providers: [AttendanceService, LeaderService, ExportService, PeopleDirectory, Clock, PerUserThrottlerGuard],
+  imports: [
+    AuditModule,
+    PrivacyModule,
+    ThrottlerModule.forRoot([{ name: 'check-in', limit: CHECK_IN_LIMIT, ttl: 60_000 }]),
+  ],
+  controllers: [DailyCodeController, AttendanceController, ...LEADER_CONTROLLERS, ...RULES_CONTROLLERS],
+  providers: [
+    AttendanceService,
+    LeaderService,
+    ExportService,
+    OvertimeService,
+    JustificationService,
+    HolidaysService,
+    PeopleDirectory,
+    PerUserThrottlerGuard,
+  ],
 })
 export class AttendanceModule {}

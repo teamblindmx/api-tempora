@@ -5,7 +5,9 @@ import { Clock } from '../../common/clock.js';
 import { TenantDb } from '../../database/tenant-db.service.js';
 import type { RequestContext } from '../../tenancy/request-context.js';
 import { AuditService } from '../audit/audit.service.js';
-import { fail, shiftOf, toDate, toRecordDto } from './attendance.records.js';
+import { dayKey, fail, fromDate, shiftOf, toDate, toRecordDto } from './attendance.records.js';
+import { type DayInfo, dayInfo } from './rules/calendar.js';
+import { asKind, asStatus } from './rules/justification.js';
 import { ATTENDANCE_ERRORS, type AttendanceRecord } from './attendance.schemas.js';
 import { PeopleDirectory } from './people.js';
 import { daysInRange, EXPORT_MAX_DAYS } from './rules/panel.js';
@@ -19,6 +21,9 @@ const STATUS_LABEL: Record<AttendanceRecord['status'], string> = {
   closed: 'Cerrada',
 };
 const SOURCE_LABEL = { self: 'Trabajador', manual: 'Líder (manual)' } as const;
+const DAY_LABEL = { ordinary: 'Ordinario', sunday: 'Domingo', rest: 'Descanso', holiday: 'Festivo' } as const;
+const JUSTIFICATION_LABEL = { late: 'Retardo', 'early-exit': 'Salida anticipada', absence: 'Falta' } as const;
+const JSTATUS_LABEL = { pending: 'pendiente', approved: 'aprobada', rejected: 'rechazada' } as const;
 const KIND_LABEL = { regular: 'Normal', early: 'Anticipada' } as const;
 
 /** Motivos de revisión en palabras, para quien arma la nómina. */
@@ -42,6 +47,8 @@ interface Row {
   record: AttendanceRecord;
   checkInAt: Date;
   checkOutAt: Date | null;
+  day: DayInfo;
+  justifications: string;
 }
 
 /**
@@ -76,7 +83,7 @@ export class ExportService {
         : null;
     const now = this.clock.now();
 
-    const records = await this.db.run(async (tx, companyId) => {
+    const data = await this.db.run(async (tx, companyId) => {
       const rows = await tx.attendanceRecord.findMany({
         where: {
           companyId,
@@ -87,14 +94,32 @@ export class ExportService {
         orderBy: [{ workDate: 'asc' }, { checkInAt: 'asc' }],
         take: 100_000,
       });
+      const range = { gte: toDate(from), lte: toDate(to) };
+      const [holidays, auths, justifications] = await Promise.all([
+        tx.holiday.findMany({ where: { companyId, date: range } }),
+        tx.overtimeAuthorization.findMany({ where: { companyId, workDate: range } }),
+        tx.justification.findMany({ where: { companyId, workDate: range }, orderBy: { submittedAt: 'asc' } }),
+      ]);
       await this.audit.record(tx, companyId, {
         action: 'attendance.export',
         targetType: scope?.type ?? 'company',
         targetId: scope?.id ?? companyId,
         after: { from, to, rows: rows.length, format: 'xlsx' },
       });
-      return rows;
+      return { rows, holidays, auths, justifications };
     });
+    // Un festivo de la sede gana al de la compañía (mismo criterio que work-calendar.ts).
+    const holidayName = (recordSite: string, date: string) =>
+      data.holidays.find((h) => h.siteId === recordSite && fromDate(h.date) === date)?.name ??
+      data.holidays.find((h) => h.siteId === null && fromDate(h.date) === date)?.name ??
+      null;
+    const authOf = new Map(data.auths.map((a) => [dayKey(a.userId, a.workDate), a]));
+    const justOf = (userId: string, date: string) =>
+      data.justifications
+        .filter((j) => j.userId === userId && fromDate(j.workDate) === date)
+        .map((j) => `${JUSTIFICATION_LABEL[asKind(j.kind)]} (${JSTATUS_LABEL[asStatus(j.status)]})`)
+        .join(', ');
+    const records = data.rows;
 
     const [people, siteNames] = await Promise.all([
       this.people.people(records.map((r) => r.userId)),
@@ -103,13 +128,20 @@ export class ExportService {
     const rows: Row[] = records
       .map((r) => {
         const p = people.get(r.userId);
+        const date = fromDate(r.workDate);
         return {
+          day: dayInfo(date, r.site.restDays, holidayName(r.siteId, date)),
+          justifications: justOf(r.userId, date),
           siteName: siteNames.get(r.siteId) ?? r.siteId,
           name: p?.name ?? r.userId,
           phone: p?.phoneNumber ?? '',
           email: p?.email ?? '',
           timezone: r.site.timezone,
-          record: toRecordDto(r, localDate(now, r.site.timezone), shiftOf(r.site)),
+          record: toRecordDto(r, localDate(now, r.site.timezone), shiftOf(r.site), {
+            timezone: r.site.timezone,
+            now,
+            authorization: authOf.get(dayKey(r.userId, r.workDate)) ?? null,
+          }),
           checkInAt: r.checkInAt,
           checkOutAt: r.checkOutAt,
         };
@@ -145,9 +177,16 @@ export class ExportService {
       'Teléfono',
       'Correo',
       'Fecha',
+      'Tipo de día',
+      'Domingo',
       'Entrada',
       'Salida',
       'Horas',
+      'Retardo',
+      'Minutos tras la entrada oficial',
+      'Entrada tardía (código vencido)',
+      'Horas extra autorizadas',
+      'Tiempo no autorizado (horas)',
       'Estado',
       'Tipo de salida',
       'Motivo de salida',
@@ -155,6 +194,7 @@ export class ExportService {
       'Salida registrada por',
       'Comentario del líder',
       'Por revisar',
+      'Justificaciones',
       'Id de usuario',
     ].map(bold);
     const data: SheetData = [header];
@@ -169,11 +209,24 @@ export class ExportService {
         row.phone,
         row.email,
         { value: toDate(r.workDate), format: 'dd/mm/yyyy' },
+        row.day.holidayName
+          ? `${DAY_LABEL[row.day.dayType]}: ${row.day.holidayName}`
+          : DAY_LABEL[row.day.dayType],
+        row.day.sunday ? 'Sí' : '',
         { value: wallClock(row.checkInAt, row.timezone), format: 'dd/mm/yyyy hh:mm' },
         row.checkOutAt
           ? { value: wallClock(row.checkOutAt, row.timezone), format: 'dd/mm/yyyy hh:mm' }
           : null,
         r.workedMinutes != null ? { value: hours(r.workedMinutes), format: '0.00' } : null,
+        r.late ? 'Sí' : '',
+        r.lateMinutes,
+        r.checkInCodeExpired ? 'Sí' : '',
+        r.overtime?.authorizedMinutes != null
+          ? { value: hours(r.overtime.authorizedMinutes), format: '0.00' }
+          : null,
+        r.overtime?.unauthorizedMinutes != null
+          ? { value: hours(r.overtime.unauthorizedMinutes), format: '0.00' }
+          : null,
         STATUS_LABEL[r.status],
         r.checkOutKind ? KIND_LABEL[r.checkOutKind] : '',
         r.checkOutKind === 'early' ? (r.checkOutReason ?? '') : '',
@@ -181,6 +234,7 @@ export class ExportService {
         r.checkOutSource ? SOURCE_LABEL[r.checkOutSource] : '',
         comments.join(' · '),
         r.reviewReasons.map((x) => REVIEW_LABEL[x] ?? x).join(', '),
+        row.justifications,
         r.userId,
       ]);
     }
@@ -198,11 +252,17 @@ export class ExportService {
       'Salidas pendientes',
       'Jornadas por revisar',
       'Jornadas con marcado manual',
+      'Retardos',
+      'Horas extra autorizadas',
+      'Tiempo no autorizado (horas)',
+      'Domingos trabajados',
+      'Descansos trabajados',
+      'Festivos trabajados',
       'Id de usuario',
     ].map(bold);
     const groups = new Map<
       string,
-      { siteName: string; name: string; userId: string; recs: AttendanceRecord[] }
+      { siteName: string; name: string; userId: string; recs: AttendanceRecord[]; days: DayInfo[] }
     >();
     for (const row of rows) {
       const key = `${row.siteName}\u0000${row.record.userId}`;
@@ -211,8 +271,10 @@ export class ExportService {
         name: row.name,
         userId: row.record.userId,
         recs: [],
+        days: [],
       };
       g.recs.push(row.record);
+      g.days.push(row.day);
       groups.set(key, g);
     }
     const data: SheetData = [header];
@@ -226,6 +288,18 @@ export class ExportService {
         g.recs.filter((r) => r.status === 'pending-exit').length,
         g.recs.filter((r) => r.needsReview).length,
         g.recs.filter((r) => r.checkInSource === 'manual' || r.checkOutSource === 'manual').length,
+        g.recs.filter((r) => r.late).length,
+        {
+          value: hours(g.recs.reduce((s, r) => s + (r.overtime?.authorizedMinutes ?? 0), 0)),
+          format: '0.00',
+        },
+        {
+          value: hours(g.recs.reduce((s, r) => s + (r.overtime?.unauthorizedMinutes ?? 0), 0)),
+          format: '0.00',
+        },
+        g.days.filter((d) => d.sunday).length,
+        g.days.filter((d) => d.dayType === 'rest').length,
+        g.days.filter((d) => d.dayType === 'holiday').length,
         g.userId,
       ]);
     }
@@ -233,5 +307,7 @@ export class ExportService {
   }
 }
 
-const DETAIL_WIDTHS = [18, 28, 16, 28, 12, 17, 17, 8, 16, 14, 30, 20, 20, 40, 30, 28];
-const SUMMARY_WIDTHS = [18, 28, 16, 10, 18, 18, 20, 26, 28];
+const DETAIL_WIDTHS = [
+  18, 28, 16, 28, 12, 22, 9, 17, 17, 8, 9, 14, 14, 12, 14, 16, 14, 30, 20, 20, 40, 30, 30, 28,
+];
+const SUMMARY_WIDTHS = [18, 28, 16, 10, 18, 18, 20, 26, 10, 14, 14, 12, 12, 12, 28];

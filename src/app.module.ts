@@ -6,11 +6,13 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AUTH, type AuthService } from './auth/auth.js';
 import { AuthModule } from './auth/auth.module.js';
 import { APP_CONFIG, type AppConfig } from './config/config.js';
+import { Clock } from './common/clock.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthController } from './health/health.controller.js';
 import { AttendanceModule } from './modules/attendance/attendance.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { EmployeesModule } from './modules/employees/employees.module.js';
+import { PrivacyModule } from './modules/privacy/privacy.module.js';
 import { SitesModule } from './modules/sites/sites.module.js';
 
 /**
@@ -33,16 +35,19 @@ export class AppModule implements OnApplicationShutdown {
         AuditModule,
         SitesModule,
         EmployeesModule,
+        PrivacyModule,
         AttendanceModule,
       ],
       controllers: [HealthController],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: AUTH, useValue: auth },
+        // Un solo reloj para toda la API (las pruebas lo fijan).
+        Clock,
         { provide: APP_PIPE, useClass: ZodValidationPipe },
         { provide: APP_INTERCEPTOR, useClass: ZodSerializerInterceptor },
       ],
-      exports: [APP_CONFIG, AUTH],
+      exports: [APP_CONFIG, AUTH, Clock],
     };
   }
 

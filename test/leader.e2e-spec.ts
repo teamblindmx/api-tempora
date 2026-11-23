@@ -6,6 +6,7 @@ import type { Site } from '@teamblind/axeda-core';
 import { Clock } from '../src/common/clock.js';
 import type { RoleKey } from '../src/auth/permissions.js';
 import {
+  acceptPrivacy,
   as,
   createTenants,
   createUser,
@@ -119,6 +120,10 @@ beforeAll(async () => {
   await as(t, x.adminA).put(`/sites/${x.siteA2.id}`, SITE).expect(200);
   await as(t, x.adminA).put(`/sites/${siteN1.id}`, SITE).expect(200);
   await as(t, x.adminB).put(`/sites/${x.siteB1.id}`, SITE).expect(200);
+  await acceptPrivacy(t, x.siteA1.id, x.workerA1, x.leaderA1, ana);
+  await acceptPrivacy(t, x.siteA2.id, workerA2);
+  await acceptPrivacy(t, x.siteB1.id, workerB1);
+  await acceptPrivacy(t, siteN1.id, workerN1);
 });
 afterAll(async () => {
   await t?.close();

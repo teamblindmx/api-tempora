@@ -249,3 +249,14 @@ export function as(t: TestApp, user: TestUser) {
     put: (path: string, body?: object) => withAuth(request(t.server).put(path)).send(body ?? {}),
   };
 }
+
+/** Versión del aviso de privacidad en las pruebas (la de .env.example). */
+export const PRIVACY_VERSION = '2026-11-borrador';
+
+/** Acepta el aviso de privacidad vigente desde una sede (es por compañía). Sin esto no se marca. */
+export async function acceptPrivacy(t: TestApp, siteId: string, ...users: TestUser[]) {
+  for (const u of users) {
+    const res = await as(t, u).post(`/sites/${siteId}/privacy-notice/accept`, { version: PRIVACY_VERSION });
+    if (res.status !== 200) throw new Error(`privacy-notice/accept ${res.status}: ${res.text}`);
+  }
+}

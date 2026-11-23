@@ -47,11 +47,12 @@ src/
     sites/           Datos de Tempora de cada sede de Axeda: ubicación y radio.
     employees/       Perfiles de recursos humanos.
     audit/           Auditoría de solo inserción.
+    privacy/         Aceptación del aviso de privacidad y el guard que bloquea la jornada sin ella.
     attendance/      Jornada. rules/ son funciones puras, sin Nest ni base de datos.
 prisma/              Esquema y migraciones (las de RLS se escriben a mano).
 docker/postgres/     Roles y base para desarrollo y CI.
 test/                Pruebas de aislamiento contra PostgreSQL.
-docs/adr/            Decisiones (0009: NestJS sobre Express).
+docs/adr/            Decisiones (0009 a 0014).
 ```
 
 Compañías, negocios, sedes y usuarios viven en Axeda (esquema `auth`); el frontend los administra con
@@ -178,6 +179,43 @@ WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y
   exporta: `report:export` es de los administradores.
 - Prueba manual en Windows: `scripts/prueba-panel.ps1` (ADR 0013).
 
+### Jornada: retardos, justificaciones, horas extra, festivos y aviso de privacidad (ADR 0014)
+
+| Ruta                                             | Permiso                 | Qué hace                                                                           |
+| ------------------------------------------------ | ----------------------- | ---------------------------------------------------------------------------------- |
+| `GET /sites/:siteId/privacy-notice`              | `attendance:mark`       | Versión vigente del aviso y si ya la aceptó                                        |
+| `POST /sites/:siteId/privacy-notice/accept`      | `attendance:mark`       | Acepta `{ version }` (idempotente; 409 si no es la vigente)                        |
+| `POST /sites/:siteId/attendance/late-check-in`   | `attendance:mark`       | Entrada tardía con un código de hoy ya vencido                                     |
+| `POST /sites/:siteId/justifications`             | `justification:write`   | Justifica `{ workDate, kind, reason }` (late, early-exit, absence)                 |
+| `GET /sites/:siteId/justifications/me`           | `justification:write`   | Mis justificaciones en la sede                                                     |
+| `GET /sites/:siteId/justifications?status=`      | `justification:resolve` | Las de la sede, para el líder                                                      |
+| `POST /sites/:siteId/justifications/:id/approve` | `justification:resolve` | Aprueba (`comment` opcional)                                                       |
+| `POST /sites/:siteId/justifications/:id/reject`  | `justification:resolve` | Rechaza (`comment` obligatorio)                                                    |
+| `POST /sites/:siteId/overtime`                   | `overtime:authorize`    | Autoriza `{ userId, workDate?, until?, reason }`; `until: null` es jornada abierta |
+| `POST /sites/:siteId/overtime/:id/close`         | `overtime:authorize`    | Cierra la autorización ahora                                                       |
+| `GET /sites/:siteId/overtime?date=`              | `attendance:read`       | Autorizaciones del día, con sus minutos                                            |
+| `GET /companies/:companyId/holidays?year=`       | `site:read`             | Festivos de la compañía y sus sedes                                                |
+| `POST /companies/:companyId/holidays`            | `holiday:manage`        | Festivo para todas las sedes `{ date, name }`                                      |
+| `POST /companies/:companyId/holidays/statutory`  | `holiday:manage`        | Carga los del art. 74 de la LFT de `{ year }`                                      |
+| `DELETE /companies/:companyId/holidays/:id`      | `holiday:manage`        | Borra un festivo (queda auditado)                                                  |
+| `GET /sites/:siteId/holidays?year=`              | `site:read`             | Los que valen en la sede                                                           |
+| `POST /sites/:siteId/holidays`                   | `holiday:manage`        | Festivo solo de la sede                                                            |
+
+- **Aviso de privacidad**: hasta aceptar la versión vigente (`PRIVACY_NOTICE_VERSION`) en la compañía,
+  entrada, salida, `me`, `me/calendar` y las justificaciones propias dan 403
+  `TEMPORA_PRIVACY_NOT_ACCEPTED`. Es por compañía y de solo inserción.
+- **Retardo**: `PUT /sites/:siteId` acepta `lateToleranceMin` (10 por omisión) y `restDays` (0 =
+  domingo ... 6 = sábado; `[0]` por omisión). Cada jornada trae `late`, `lateMinutes` y
+  `checkInCodeExpired`, decididos al entrar. En descanso o festivo no hay retardo.
+- **Horas extra**: cada jornada trae `overtime` (null sin horario) con `extraMinutes`,
+  `authorizedMinutes`, `unauthorizedMinutes` y la autorización; `inProgress` mientras sigue dentro.
+  No se autoriza después de la salida ni a uno mismo. Dobles y triples, después del 1 de enero.
+- **Días**: el panel trae `day` (`dayType`, `sunday`, `holidayName`, `workday`); cada día del
+  calendario también, con `status: 'day-off'` en descansos y festivos sin jornada, sus justificaciones
+  y totales de retardos, horas extra y domingos, descansos y festivos trabajados. El Excel suma esas
+  columnas.
+- Prueba manual en Windows: `scripts/prueba-jornada.ps1`.
+
 ### Cookies
 
 Better Auth usa cookies `HttpOnly` y `SameSite=Lax`, así que frontend y API deben estar en el mismo
@@ -187,9 +225,10 @@ desde un origen que no está en la lista reciben 403.
 
 ## Pendiente
 
-- Jornada: entrada tardía con código vencido, corregir la hora de un marcado ya registrado
-  (`attendance:correct`), marcar como revisada una jornada "por revisar", y avisos al líder.
-- Horario oficial, tolerancia de retardo y días de descanso de cada sede (pregunta abierta 4 del PRD).
+- Jornada: corregir la hora de un marcado ya registrado (`attendance:correct`), marcar como revisada
+  una jornada "por revisar", y avisos al líder.
+- Después del 1 de enero: horas extra dobles y triples, disputa de justificaciones con RH, comisiones
+  (regla 11), descansos por cuadrilla.
 
 - WhatsApp con Meta como canal principal (Twilio queda de respaldo), cuando esté la cuenta aprobada.
 - Elegir proveedor de correo y conectarlo en `src/auth/messaging.ts`.
