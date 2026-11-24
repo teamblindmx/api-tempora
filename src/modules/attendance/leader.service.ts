@@ -6,9 +6,12 @@ import { TenantDb } from '../../database/tenant-db.service.js';
 import type { RequestContext } from '../../tenancy/request-context.js';
 import { AuditService } from '../audit/audit.service.js';
 import {
+  dayKey,
   fail,
   fromDate,
   isManual,
+  type OvertimeRow,
+  overtimeByDay,
   type RecordRow,
   shiftOf,
   siteOrFail,
@@ -20,8 +23,11 @@ import { type Person, PeopleDirectory } from './people.js';
 import { exitKind } from './rules/exit.js';
 import { MANUAL_MAX_DAYS_BACK, manualCheckInProblem, manualCheckOutProblem } from './rules/manual.js';
 import { recordStatus } from './rules/marking.js';
+import { asKind, asStatus } from './rules/justification.js';
+import { evaluateLateness } from './rules/lateness.js';
 import { calendarStatus, type DayStatus, minutesAfterStart, monthDays, summarize } from './rules/panel.js';
 import { addDays, localDate, scheduledEnd, type Shift } from './rules/workday.js';
+import { dayOf, daysOf } from './work-calendar.js';
 
 const STATUS_ORDER: Record<DayStatus, number> = { missing: 0, 'pending-exit': 1, open: 2, closed: 3 };
 
@@ -61,8 +67,13 @@ export class LeaderService {
     const { siteId } = this.context();
     const now = this.clock.now();
     const roster = await this.people.siteRoster(siteId, now);
-    const { site, day, today, records, unclosed } = await this.loadDay(siteId, date, now);
+    const { site, day, today, records, unclosed, info, auths } = await this.loadDay(siteId, date, now);
     const shift = shiftOf(site);
+    const ot = (r: RecordRow) => ({
+      timezone: site.timezone,
+      now,
+      authorization: auths.get(dayKey(r.userId, r.workDate)) ?? null,
+    });
     const onRoster = new Set(roster.map((p) => p.userId));
     const others = await this.people.people(
       [...records, ...unclosed].map((r) => r.userId).filter((id) => !onRoster.has(id)),
@@ -70,7 +81,7 @@ export class LeaderService {
     const personOf = (userId: string) =>
       roster.find((p) => p.userId === userId) ?? others.get(userId) ?? unknownPerson(userId);
     const entry = (person: Person, r: RecordRow | undefined) => {
-      const record = r ? toRecordDto(r, today, shift) : null;
+      const record = r ? toRecordDto(r, today, shift, ot(r)) : null;
       return {
         person,
         onRoster: onRoster.has(person.userId),
@@ -78,6 +89,7 @@ export class LeaderService {
         minutesAfterStart: r
           ? minutesAfterStart(r.checkInAt, fromDate(r.workDate), shift, site.timezone)
           : null,
+        late: r?.checkInLate ?? false,
         manual: r ? isManual(r) : false,
         record,
       };
@@ -99,7 +111,12 @@ export class LeaderService {
       today,
       timezone: site.timezone,
       shift,
-      summary: summarize(entries.map((e) => ({ ...e, needsReview: !!e.record?.needsReview }))),
+      lateToleranceMin: site.lateToleranceMin,
+      day: info,
+      summary: {
+        ...summarize(entries.map((e) => ({ ...e, needsReview: !!e.record?.needsReview }))),
+        late: entries.filter((e) => e.late).length,
+      },
       entries,
       pendingExits: unclosed
         .filter(
@@ -134,7 +151,12 @@ export class LeaderService {
             })
           : Promise.resolve([] as RecordRow[]),
       ]);
-      return { site, day, today, records, unclosed };
+      const from = unclosed.length ? fromDate(unclosed.at(-1)!.workDate) : day;
+      const [info, auths] = await Promise.all([
+        dayOf(tx, companyId, site, day),
+        overtimeByDay(tx, companyId, { siteId }, from, day),
+      ]);
+      return { site, day, today, records, unclosed, info, auths };
     });
   }
 
@@ -184,6 +206,17 @@ export class LeaderService {
         });
         if (existing) this.alreadyCheckedIn(workDate);
 
+        const shift = shiftOf(site);
+        const info = await dayOf(tx, companyId, site, workDate);
+        const lateness = evaluateLateness({
+          checkInAt: when,
+          workDate,
+          shift,
+          timeZone: site.timezone,
+          toleranceMin: site.lateToleranceMin,
+          workday: info.workday,
+          codeExpired: false,
+        });
         const record = await tx.attendanceRecord.create({
           data: {
             companyId,
@@ -194,6 +227,8 @@ export class LeaderService {
             checkInSource: 'manual',
             checkInBy: actorId,
             checkInComment: comment,
+            checkInLate: lateness.late,
+            checkInLateMinutes: lateness.minutesAfterStart,
           },
         });
         await this.audit.record(tx, companyId, {
@@ -207,10 +242,13 @@ export class LeaderService {
             checkInAt: when.toISOString(),
             recordedAt: now.toISOString(),
             source: 'manual',
+            late: lateness.late,
+            lateMinutes: lateness.minutesAfterStart,
+            dayType: info.dayType,
           },
           reason: comment,
         });
-        return toRecordDto(record, today, shiftOf(site));
+        return toRecordDto(record, today, shift);
       });
     } catch (e) {
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
@@ -309,7 +347,10 @@ export class LeaderService {
         },
         reason: comment,
       });
-      return toRecordDto({ ...open, ...data }, today, shift);
+      const authorization = await tx.overtimeAuthorization.findFirst({
+        where: { companyId, userId, workDate: open.workDate },
+      });
+      return toRecordDto({ ...open, ...data }, today, shift, { timezone: site.timezone, now, authorization });
     });
   }
 
@@ -327,24 +368,54 @@ export class LeaderService {
       const shift = shiftOf(site);
       const today = localDate(now, site.timezone);
       const days = monthDays(month ?? today.slice(0, 7));
-      const records = await tx.attendanceRecord.findMany({
-        where: {
-          companyId,
-          siteId,
-          userId: who,
-          workDate: { gte: toDate(days[0]!), lte: toDate(days.at(-1)!) },
-        },
-      });
-      const byDate = new Map(records.map((r) => [fromDate(r.workDate), toRecordDto(r, today, shift)]));
+      const first = days[0]!;
+      const last = days.at(-1)!;
+      const [records, infos, auths, justifications] = await Promise.all([
+        tx.attendanceRecord.findMany({
+          where: { companyId, siteId, userId: who, workDate: { gte: toDate(first), lte: toDate(last) } },
+        }),
+        daysOf(tx, companyId, site, first, last),
+        overtimeByDay(tx, companyId, { siteId, userId: who }, first, last),
+        tx.justification.findMany({
+          where: { companyId, siteId, userId: who, workDate: { gte: toDate(first), lte: toDate(last) } },
+          orderBy: { submittedAt: 'asc' },
+        }),
+      ]);
+      const authOf = (date: string): OvertimeRow | null => auths.get(dayKey(who, date)) ?? null;
+      const byDate = new Map(
+        records.map((r) => {
+          const date = fromDate(r.workDate);
+          return [
+            date,
+            toRecordDto(r, today, shift, { timezone: site.timezone, now, authorization: authOf(date) }),
+          ];
+        }),
+      );
       const list = days.map((date) => {
         const record = byDate.get(date) ?? null;
-        return { date, status: calendarStatus(date, today, record?.status ?? null), record };
+        const info = infos.get(date)!;
+        const base = calendarStatus(date, today, record?.status ?? null);
+        return {
+          date,
+          status: base === 'no-record' && !info.workday ? ('day-off' as const) : base,
+          ...info,
+          record,
+          justifications: justifications
+            .filter((j) => fromDate(j.workDate) === date)
+            .map((j) => ({
+              id: j.id,
+              kind: asKind(j.kind),
+              status: asStatus(j.status),
+            })),
+        };
       });
       const recs = [...byDate.values()];
+      const worked = (type: string) =>
+        list.filter((d) => d.record && (type === 'sunday' ? d.sunday : d.dayType === type)).length;
       return {
         siteId,
         userId: who,
-        month: days[0]!.slice(0, 7),
+        month: first.slice(0, 7),
         today,
         days: list,
         totals: {
@@ -353,6 +424,13 @@ export class LeaderService {
           pendingExits: recs.filter((r) => r.status === 'pending-exit').length,
           needsReview: recs.filter((r) => r.needsReview).length,
           manual: recs.filter((r) => r.checkInSource === 'manual' || r.checkOutSource === 'manual').length,
+          noRecord: list.filter((d) => d.status === 'no-record').length,
+          late: recs.filter((r) => r.late).length,
+          sundaysWorked: worked('sunday'),
+          restDaysWorked: worked('rest'),
+          holidaysWorked: worked('holiday'),
+          overtimeAuthorizedMinutes: recs.reduce((s, r) => s + (r.overtime?.authorizedMinutes ?? 0), 0),
+          overtimeUnauthorizedMinutes: recs.reduce((s, r) => s + (r.overtime?.unauthorizedMinutes ?? 0), 0),
         },
       };
     });

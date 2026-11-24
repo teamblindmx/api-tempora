@@ -321,3 +321,178 @@ describe('Jornada: códigos y marcajes', () => {
     ).resolves.toMatchObject({ checkOutSource: 'manual' });
   });
 });
+
+describe('Semanas 5 y 6: festivos, justificaciones, horas extra y aviso de privacidad', () => {
+  const now = new Date('2026-12-10T14:00:00Z');
+  const day = new Date('2026-12-10T00:00:00Z');
+  const rec: Record<string, string> = {};
+  const just: Record<string, string> = {};
+
+  beforeAll(async () => {
+    for (const c of [A, B]) {
+      const r = await withCompany(db, c, (tx) =>
+        tx.attendanceRecord.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            userId: 'w1',
+            workDate: day,
+            checkInAt: now,
+            checkInSource: 'manual',
+            checkInBy: 'lider',
+            checkInComment: 'Prueba de aislamiento',
+            checkInLate: true,
+          },
+        }),
+      );
+      rec[c] = r.id;
+      await withCompany(db, c, async (tx) => {
+        await tx.holiday.create({ data: { companyId: c, date: day, name: 'Festivo', createdBy: 'admin' } });
+        const j = await tx.justification.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            userId: 'w1',
+            workDate: day,
+            kind: 'late',
+            attendanceRecordId: r.id,
+            reason: 'Llegué tarde por el tráfico',
+            submittedBy: 'w1',
+            submittedAt: now,
+          },
+        });
+        just[c] = j.id;
+        await tx.overtimeAuthorization.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            userId: 'w1',
+            workDate: day,
+            reason: 'Pedido urgente',
+            authorizedBy: 'lider',
+            authorizedAt: now,
+          },
+        });
+        await tx.privacyAcceptance.create({
+          data: { companyId: c, userId: 'w1', version: 'v1', acceptedAt: now },
+        });
+      });
+    }
+  });
+
+  it('cada compañía ve solo lo suyo en las cuatro tablas', async () => {
+    const seen = await withCompany(db, A, async (tx) => [
+      ...(await tx.holiday.findMany()),
+      ...(await tx.justification.findMany()),
+      ...(await tx.overtimeAuthorization.findMany()),
+      ...(await tx.privacyAcceptance.findMany()),
+    ]);
+    expect(seen).toHaveLength(4);
+    for (const row of seen) expect(row.companyId).toBe(A);
+    const u = await withCompany(db, A, (tx) =>
+      tx.justification.updateMany({
+        where: { id: just[B]! },
+        data: { status: 'approved', resolvedBy: 'x', resolvedAt: now },
+      }),
+    );
+    expect(u.count).toBe(0);
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.holiday.create({ data: { companyId: B, date: day, name: 'Ajeno', createdBy: 'x' } }),
+      ),
+    ).rejects.toThrow(/row-level security/);
+  });
+
+  it('una justificación o una autorización de A no apuntan a la sede ni a la jornada de B', async () => {
+    const base = {
+      companyId: A,
+      userId: 'w2',
+      workDate: day,
+      reason: 'Motivo de prueba',
+      submittedBy: 'w2',
+      submittedAt: now,
+    };
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.justification.create({
+          data: { ...base, siteId: ids[A]!, kind: 'late', attendanceRecordId: rec[B]! },
+        }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.justification.create({ data: { ...base, siteId: ids[B]!, kind: 'absence' } }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.overtimeAuthorization.create({
+          data: {
+            companyId: A,
+            siteId: ids[B]!,
+            userId: 'w2',
+            workDate: day,
+            reason: 'Otra sede',
+            authorizedBy: 'l',
+            authorizedAt: now,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+  });
+
+  it('la aceptación del aviso es de solo inserción; justificaciones y horas extra no se borran', async () => {
+    await expect(
+      withCompany(db, A, (tx) => tx.privacyAcceptance.updateMany({ data: { version: 'v2' } })),
+    ).rejects.toThrow(/permission denied/);
+    await expect(withCompany(db, A, (tx) => tx.privacyAcceptance.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+    await expect(withCompany(db, A, (tx) => tx.justification.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+    await expect(withCompany(db, A, (tx) => tx.overtimeAuthorization.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+  });
+
+  it('la base impide resolver la propia, rechazar sin comentario o autorizarse horas extra', async () => {
+    const resolve = (data: object) =>
+      withCompany(db, A, (tx) => tx.justification.update({ where: { id: just[A]! }, data }));
+    await expect(resolve({ status: 'approved', resolvedBy: 'w1', resolvedAt: now })).rejects.toThrow(
+      /justification_not_self/,
+    );
+    await expect(resolve({ status: 'rejected', resolvedBy: 'lider', resolvedAt: now })).rejects.toThrow(
+      /justification_status/,
+    );
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.overtimeAuthorization.create({
+          data: {
+            companyId: A,
+            siteId: ids[A]!,
+            userId: 'w3',
+            workDate: day,
+            reason: 'Para mí',
+            authorizedBy: 'w3',
+            authorizedAt: now,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/overtime_not_self/);
+  });
+
+  it('un solo festivo de compañía por fecha aunque la sede sea NULL', async () => {
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.holiday.create({ data: { companyId: A, date: day, name: 'Otro', createdBy: 'x' } }),
+      ),
+    ).rejects.toThrow(/Unique constraint/i);
+    // En la sede sí cabe uno propio el mismo día.
+    await withCompany(db, A, (tx) =>
+      tx.holiday.create({
+        data: { companyId: A, siteId: ids[A]!, date: day, name: 'Local', createdBy: 'x' },
+      }),
+    );
+  });
+});

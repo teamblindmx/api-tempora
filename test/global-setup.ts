@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
 import pg from 'pg';
 import type { TestProject } from 'vitest/node';
 import { migrateAuth } from '../src/auth/auth.js';
@@ -52,7 +53,10 @@ export default async function setup(project: TestProject) {
   await owner.query('REVOKE ALL ON SCHEMA public FROM PUBLIC; CREATE SCHEMA auth AUTHORIZATION tempora_auth');
   await owner.end();
 
-  execFileSync('npx', ['prisma', 'migrate', 'deploy'], {
+  // Se llama al CLI de Prisma con node y no con `npx`: en Windows `npx` es `npx.cmd` y
+  // execFileSync no puede lanzarlo sin shell (spawnSync npx ENOENT).
+  const prismaCli = createRequire(import.meta.url).resolve('prisma/build/index.js');
+  execFileSync(process.execPath, [prismaCli, 'migrate', 'deploy'], {
     env: { ...process.env, ...env },
     stdio: 'pipe',
   });

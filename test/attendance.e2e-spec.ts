@@ -2,7 +2,15 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ThrottlerStorage } from '@nestjs/throttler';
 import { Clock } from '../src/common/clock.js';
-import { as, createTenants, startApp, type Tenants, type TestApp, type TestUser } from './helpers.js';
+import {
+  acceptPrivacy,
+  as,
+  createTenants,
+  startApp,
+  type Tenants,
+  type TestApp,
+  type TestUser,
+} from './helpers.js';
 
 let t: TestApp;
 let x: Tenants;
@@ -34,6 +42,8 @@ beforeAll(async () => {
     .put(`/sites/${x.siteA1.id}`, { ...SITE, radiusM: 300, shiftStart: '08:00', shiftEnd: '17:00' })
     .expect(200);
   await as(t, x.adminB).put(`/sites/${x.siteB1.id}`, SITE).expect(200);
+  await acceptPrivacy(t, x.siteA1.id, x.workerA1, x.leaderA1, x.adminA);
+  await acceptPrivacy(t, x.siteB1.id, x.adminB);
 });
 afterAll(async () => {
   await t?.close();

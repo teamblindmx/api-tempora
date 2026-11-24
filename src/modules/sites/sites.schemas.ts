@@ -1,6 +1,8 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 import { DEFAULT_RADIUS_M } from '../attendance/rules/location.js';
+import { DEFAULT_REST_DAYS } from '../attendance/rules/calendar.js';
+import { DEFAULT_LATE_TOLERANCE_MIN, MAX_LATE_TOLERANCE_MIN } from '../attendance/rules/lateness.js';
 import { HHMM, isValidTimeZone } from '../attendance/rules/workday.js';
 
 const time = z.string().regex(HHMM, 'Formato HH:MM, 24 horas');
@@ -18,6 +20,15 @@ export const SiteSettingsSchema = z
     /** Horario oficial en la zona de la sede. Los dos o ninguno; si el cierre es antes, cruza la medianoche. */
     shiftStart: time.nullable().default(null),
     shiftEnd: time.nullable().default(null),
+    /** Minutos después de la entrada oficial antes de contar retardo (ADR 0014). */
+    lateToleranceMin: z.number().int().min(0).max(MAX_LATE_TOLERANCE_MIN).default(DEFAULT_LATE_TOLERANCE_MIN),
+    /** Días de descanso semanal: 0 = domingo ... 6 = sábado. Al menos un día laborable. */
+    restDays: z
+      .array(z.number().int().min(0).max(6))
+      .max(6)
+      .refine((d) => new Set(d).size === d.length, 'Días repetidos')
+      .transform((d) => d.toSorted((a, b) => a - b))
+      .default([...DEFAULT_REST_DAYS]),
   })
   .refine((s) => (s.shiftStart === null) === (s.shiftEnd === null), {
     message: 'shiftStart y shiftEnd van juntos',
@@ -37,6 +48,8 @@ export const SiteSchema = z.object({
   timezone: z.string(),
   shiftStart: z.string().nullable(),
   shiftEnd: z.string().nullable(),
+  lateToleranceMin: z.number().int(),
+  restDays: z.array(z.number().int()),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

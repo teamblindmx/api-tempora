@@ -48,6 +48,8 @@ export class SitesRepository {
               timezone: before.timezone,
               shiftStart: before.shiftStart,
               shiftEnd: before.shiftEnd,
+              lateToleranceMin: before.lateToleranceMin,
+              restDays: before.restDays,
             }
           : undefined,
         after: { ...input },

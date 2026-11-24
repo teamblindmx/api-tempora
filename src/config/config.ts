@@ -51,6 +51,15 @@ const EnvSchema = z.object({
   TWILIO_MESSAGING_SERVICE_SID: optional(
     z.string().regex(/^MG[0-9a-fA-F]{32}$/, 'debe ser MG seguido de 32 hex'),
   ),
+  /**
+   * Versión vigente del aviso de privacidad (el texto vive en el frontend). Al cambiarla, todos deben
+   * aceptarlo de nuevo antes de marcar (ADR 0014). Súbela cuando el abogado revise el texto.
+   */
+  PRIVACY_NOTICE_VERSION: z
+    .string()
+    .trim()
+    .regex(/^[\w.-]{1,40}$/, 'letras, números, punto o guion, hasta 40')
+    .default('2026-11-borrador'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   AUTH_POOL_MAX: z.coerce.number().int().min(1).max(100).default(5),
 });

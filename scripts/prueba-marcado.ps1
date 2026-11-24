@@ -98,6 +98,9 @@ $otp = Read-Host 'Pega el código de 6 dígitos del SMS de desarrollo'
 Call Post '/api/auth/phone-number/verify' $worker @{ phoneNumber = $Phone; code = $otp } | Out-Null
 Call Post '/api/auth/axeda/invitation/accept' $worker @{ token = $token } | Out-Null
 
+Step '9b. Aceptar el aviso de privacidad (sin esto, marcar da 403; ver ADR 0014)'
+Call Post "/sites/$($site.id)/privacy-notice/accept" $worker @{ version = '2026-11-borrador' } | Out-Null
+
 Step '10. Entrada con un código incorrecto (422) y luego con el bueno, dentro del radio'
 $wrong = if ($code.code -eq '000000') { '000001' } else { '000000' }
 TryCall Post "/sites/$($site.id)/attendance/check-in" $worker @{ code = $wrong }
