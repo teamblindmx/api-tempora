@@ -1,5 +1,7 @@
 # compiled output
 /dist
+# compilado de npm run pilot:setup (aparte de dist para no chocar con start:dev)
+/dist-cli
 /node_modules
 /build
 

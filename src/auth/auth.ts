@@ -10,9 +10,11 @@ import {
   sessionPrincipal,
 } from '@teamblind/axeda-better-auth';
 import type { Axeda, AssignmentScope } from '@teamblind/axeda-core';
+import { CLIENT_IP_HEADER } from '../common/client-ip.js';
 import { type AppConfig, appUrl } from '../config/config.js';
 import { canGrant, grantorLevel } from './grant-policy.js';
-import { consoleMailer, type Mailer, type SmsSender, smsText } from './messaging.js';
+import { mailerFromConfig } from './mail/from-config.js';
+import { type Mailer, type SmsSender, smsText } from './messaging.js';
 import { smsFromConfig } from './sms/from-config.js';
 import { PERMISSION_CATALOG, ROLES } from './permissions.js';
 
@@ -36,7 +38,7 @@ const isGrantRoute = (path: string): path is keyof typeof GRANT_ROUTES => Object
  * Better Auth y Axeda usan su propio pg.Pool, en el esquema auth (search_path en DATABASE_URL_AUTH).
  */
 export function buildAuthOptions(config: AppConfig, messaging: Messaging = {}) {
-  const mailer = messaging.mailer ?? consoleMailer;
+  const mailer = messaging.mailer ?? mailerFromConfig(config);
   const sms = messaging.sms ?? smsFromConfig(config);
   const pool = new pg.Pool({
     connectionString: config.DATABASE_URL_AUTH,
@@ -68,9 +70,14 @@ export function buildAuthOptions(config: AppConfig, messaging: Messaging = {}) {
     ...preset,
     // Cookie compartida entre subdominios del mismo dominio (app.tempora.mx y api.tempora.mx).
     // Sigue siendo SameSite=Lax: frontend y API deben estar en el mismo sitio (ADR 0008).
-    advanced: config.COOKIE_DOMAIN
-      ? { ...preset.advanced, crossSubDomainCookies: { enabled: true, domain: config.COOKIE_DOMAIN } }
-      : preset.advanced,
+    advanced: {
+      ...preset.advanced,
+      // La IP la pone clientIpMiddleware con lo que resolvió Express; nunca la manda el cliente.
+      ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+      ...(config.COOKIE_DOMAIN
+        ? { crossSubDomainCookies: { enabled: true, domain: config.COOKIE_DOMAIN } }
+        : {}),
+    },
     database: pool,
     plugins: [
       axedaPlugin,

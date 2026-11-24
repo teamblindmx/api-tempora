@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseTrustProxy } from '../common/client-ip.js';
 
 const url = z.url({ protocol: /^postgres(ql)?$/ });
 
@@ -51,6 +52,20 @@ const EnvSchema = z.object({
   TWILIO_MESSAGING_SERVICE_SID: optional(
     z.string().regex(/^MG[0-9a-fA-F]{32}$/, 'debe ser MG seguido de 32 hex'),
   ),
+  /** Proveedor de correo. "console" imprime el correo (solo desarrollo); "resend" lo envía (ADR 0017). */
+  MAIL_PROVIDER: z.enum(['console', 'resend']).default('console'),
+  RESEND_API_KEY: optional(z.string().regex(/^re_[A-Za-z0-9_]{8,}$/, 'debe empezar con re_')),
+  /** Remitente con un dominio verificado en Resend: "Tempora <no-responder@tempora.mx>" o solo el correo. */
+  MAIL_FROM: optional(
+    z
+      .string()
+      .regex(
+        /^(?:[^<>@"]+ <[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+>|[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)$/,
+        'un correo, o "Nombre <correo>"',
+      ),
+  ),
+  /** A dónde llegan las respuestas (opcional). */
+  MAIL_REPLY_TO: optional(z.string().regex(/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/, 'un correo')),
   /**
    * Versión vigente del aviso de privacidad (el texto vive en el frontend). Al cambiarla, todos deben
    * aceptarlo de nuevo antes de marcar (ADR 0014). Súbela cuando el abogado revise el texto.
@@ -60,6 +75,25 @@ const EnvSchema = z.object({
     .trim()
     .regex(/^[\w.-]{1,40}$/, 'letras, números, punto o guion, hasta 40')
     .default('2026-11-borrador'),
+  /**
+   * Proxies delante de la API (ADR 0016): vacío = ninguno; un número = cuántos saltos (en una
+   * plataforma con balanceador, normalmente 1); o IPs/rangos CIDR. De aquí sale la IP del cliente
+   * para los topes de intentos y la auditoría.
+   */
+  TRUST_PROXY: z
+    .string()
+    .optional()
+    .transform((v, ctx) => {
+      const parsed = parseTrustProxy(v);
+      if (parsed === null) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'vacío, "false", "true", un número de 1 a 10, o IPs/rangos CIDR separados por coma',
+        });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   AUTH_POOL_MAX: z.coerce.number().int().min(1).max(100).default(5),
 });
@@ -83,6 +117,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError(
       'Configuración inválida:\n  - SMS_PROVIDER: "console" no envía mensajes; en producción hace falta un proveedor real',
     );
+  }
+  if (config.NODE_ENV === 'production' && config.MAIL_PROVIDER === 'console') {
+    throw new ConfigError(
+      'Configuración inválida:\n  - MAIL_PROVIDER: "console" no envía correos; en producción hace falta "resend"',
+    );
+  }
+  if (config.MAIL_PROVIDER === 'resend') {
+    const missing = [!config.RESEND_API_KEY && 'RESEND_API_KEY', !config.MAIL_FROM && 'MAIL_FROM'].filter(
+      Boolean,
+    );
+    if (missing.length > 0) {
+      throw new ConfigError(
+        `Configuración inválida:\n${missing.map((m) => `  - ${m}: hace falta con MAIL_PROVIDER=resend`).join('\n')}`,
+      );
+    }
   }
   if (config.SMS_PROVIDER === 'twilio') {
     const missing = [

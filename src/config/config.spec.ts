@@ -27,6 +27,13 @@ describe('loadConfig', () => {
     },
   );
 
+  it('TRUST_PROXY: por omisión no hay proxy; acepta saltos y rangos', () => {
+    expect(loadConfig(valid).TRUST_PROXY).toBe(false);
+    expect(loadConfig({ ...valid, TRUST_PROXY: '1' }).TRUST_PROXY).toBe(1);
+    expect(loadConfig({ ...valid, TRUST_PROXY: '10.0.0.0/8' }).TRUST_PROXY).toEqual(['10.0.0.0/8']);
+    expect(() => loadConfig({ ...valid, TRUST_PROXY: 'quizá' })).toThrow(/TRUST_PROXY/);
+  });
+
   it('rechaza un secreto corto', () => {
     expect(() => loadConfig({ ...valid, BETTER_AUTH_SECRET: 'corto' })).toThrow(/32 caracteres/);
   });
@@ -35,10 +42,48 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...valid, NODE_ENV: 'production' })).toThrow(/https/);
   });
 
+  /** Lo mínimo para que producción arranque con correo de verdad (Resend). */
+  const resend = {
+    MAIL_PROVIDER: 'resend',
+    RESEND_API_KEY: 're_1234567890abcdef',
+    MAIL_FROM: 'Tempora <no-responder@tempora.mx>',
+  };
+
   it('en producción no acepta el SMS de consola', () => {
     expect(() =>
-      loadConfig({ ...valid, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' }),
+      loadConfig({ ...valid, ...resend, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' }),
     ).toThrow(/SMS_PROVIDER/);
+  });
+
+  describe('Resend', () => {
+    it('en producción no acepta el correo de consola', () => {
+      expect(() =>
+        loadConfig({
+          ...valid,
+          NODE_ENV: 'production',
+          BETTER_AUTH_URL: 'https://api.tempora.mx',
+          SMS_PROVIDER: 'twilio',
+          TWILIO_ACCOUNT_SID: 'AC' + 'a'.repeat(32),
+          TWILIO_AUTH_TOKEN: 'b'.repeat(32),
+          TWILIO_FROM: '+15005550006',
+        }),
+      ).toThrow(/MAIL_PROVIDER/);
+    });
+
+    it('acepta la llave y el remitente, con o sin nombre', () => {
+      expect(loadConfig({ ...valid, ...resend }).MAIL_PROVIDER).toBe('resend');
+      expect(() => loadConfig({ ...valid, ...resend, MAIL_FROM: 'no-responder@tempora.mx' })).not.toThrow();
+    });
+
+    it.each(['RESEND_API_KEY', 'MAIL_FROM'])('falla si falta %s', (key) => {
+      expect(() => loadConfig({ ...valid, ...resend, [key]: '' })).toThrow(key);
+    });
+
+    it('rechaza una llave o un remitente con formato incorrecto', () => {
+      expect(() => loadConfig({ ...valid, ...resend, RESEND_API_KEY: 'sk_123' })).toThrow(/RESEND_API_KEY/);
+      expect(() => loadConfig({ ...valid, ...resend, MAIL_FROM: 'Tempora' })).toThrow(/MAIL_FROM/);
+      expect(() => loadConfig({ ...valid, ...resend, MAIL_REPLY_TO: 'no' })).toThrow(/MAIL_REPLY_TO/);
+    });
   });
 
   describe('Twilio', () => {
@@ -51,7 +96,12 @@ describe('loadConfig', () => {
     };
 
     it('acepta credenciales completas y sirve en producción', () => {
-      const c = loadConfig({ ...twilio, NODE_ENV: 'production', BETTER_AUTH_URL: 'https://api.tempora.mx' });
+      const c = loadConfig({
+        ...twilio,
+        ...resend,
+        NODE_ENV: 'production',
+        BETTER_AUTH_URL: 'https://api.tempora.mx',
+      });
       expect(c.SMS_PROVIDER).toBe('twilio');
       expect(c.TWILIO_API_KEY_SID).toBeUndefined();
     });

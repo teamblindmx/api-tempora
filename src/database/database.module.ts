@@ -13,6 +13,6 @@ import { PRISMA_BASE, TenantDb } from './tenant-db.service.js';
     },
     TenantDb,
   ],
-  exports: [TenantDb],
+  exports: [TenantDb, PRISMA_BASE],
 })
 export class DatabaseModule {}

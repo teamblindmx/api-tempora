@@ -1,7 +1,7 @@
 /**
  * Envío de correos y SMS. Axeda y Better Auth no envían nada: la aplicación aporta estos canales.
- * En desarrollo se imprimen en la consola. Para producción hay que conectar un proveedor real
- * (pregunta abierta del PRD: proveedor de SMS y costo).
+ * En desarrollo se imprimen en la consola; en producción, correo con Resend (mail/) y SMS con
+ * Twilio (sms/).
  */
 export interface Mailer {
   sendVerificationEmail(to: string, url: string): Promise<void>;

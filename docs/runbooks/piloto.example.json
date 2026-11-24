@@ -1,0 +1,27 @@
+{
+  "owner": "dueno@example.com",
+  "company": { "slug": "empresa-piloto", "name": "Empresa Piloto SA de CV" },
+  "business": { "slug": "manufactura", "name": "Manufactura" },
+  "site": {
+    "slug": "planta-gdl",
+    "name": "Planta Guadalajara",
+    "settings": {
+      "latitude": 20.676667,
+      "longitude": -103.347222,
+      "radiusM": 200,
+      "timezone": "America/Mexico_City",
+      "shiftStart": "08:00",
+      "shiftEnd": "17:00",
+      "lateToleranceMin": 10,
+      "restDays": [0]
+    }
+  },
+  "holidayYears": [2026, 2027],
+  "invitationTtlHours": 168,
+  "people": [
+    { "email": "rh@example.com", "role": "company-admin" },
+    { "phoneNumber": "+5213300000001", "role": "leader" },
+    { "phoneNumber": "+5213300000002", "role": "worker" },
+    { "phoneNumber": "+5213300000003", "role": "worker" }
+  ]
+}

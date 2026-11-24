@@ -44,5 +44,5 @@
       }
     }
   ],
-  "ignorePatterns": ["generated/**", "dist/**"]
+  "ignorePatterns": ["generated/**", "dist/**", "dist-cli/**"]
 }

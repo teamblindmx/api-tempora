@@ -34,6 +34,8 @@ Sin Docker: corre `docker/postgres/01-roles.sql` y `02-database.sql` con `psql` 
 | `npm run lint` / `npm run typecheck` / `npm run format` | oxlint, tipos y Prettier                                                      |
 | `npm run db:migrate:dev -- --name x --create-only`      | Nueva migración de Prisma                                                     |
 | `npm run db:migrate`                                    | Aplica migraciones de app y auth                                              |
+| `npm run pilot:setup -- piloto.json`                    | Da de alta la compañía, sede y personas del piloto (ver abajo)                |
+| `docker build -t tempora-api .`                         | Imagen de producción (ver `docs/runbooks/produccion.md`)                      |
 
 ## Cómo está armado
 
@@ -124,6 +126,14 @@ Los registros guardan el canal y el código de error de Twilio, nunca el texto n
 
 `withFallback` (`src/auth/sms/fallback.ts`) prueba canales en orden. Hoy solo hay Twilio; cuando
 WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y Twilio queda de respaldo.
+
+### Correo con Resend (ADR 0017)
+
+`MAIL_PROVIDER=console` (desarrollo) imprime los correos; `MAIL_PROVIDER=resend` los manda con la API
+de Resend (`RESEND_API_KEY`, `MAIL_FROM` con un dominio verificado, `MAIL_REPLY_TO` opcional). En
+producción la API no arranca con `console`. Dos correos, en texto y HTML sencillo, solo con el enlace:
+verificación de cuenta e invitación (`src/auth/mail/`). A los correos de relleno de quien entra por
+teléfono (`@phone.invalid`) no se manda nada.
 
 ### Jornada: código diario, entrada y salida
 
@@ -242,6 +252,24 @@ WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y
 - Excel: "Por revisar" trae solo lo pendiente; columnas nuevas "Revisado" y "Corregida".
 - Prueba manual en Windows: `scripts/prueba-correcciones.ps1`.
 
+### Producción y alta del piloto (ADR 0016)
+
+Guía completa en [`docs/runbooks/produccion.md`](docs/runbooks/produccion.md): roles de Postgres,
+variables, despliegue con la imagen, respaldos y la lista antes del piloto.
+
+- Imagen: `Dockerfile` (usuario sin privilegios). Arranca la API; `npm run db:migrate:prod` en la
+  misma imagen aplica las migraciones antes de cada despliegue. CI la construye en cada cambio.
+- `GET /health`: el proceso responde. `GET /health/ready`: además, las dos conexiones a la base (503
+  si alguna falla).
+- `TRUST_PROXY`: cuántos proxies hay delante (en la plataforma, `1`). Sin él, la IP es la de la
+  conexión y cambiar `X-Forwarded-For` no salta los topes de intentos.
+- Alta del piloto: `npm run pilot:setup -- piloto.json` con un archivo como
+  `docs/runbooks/piloto.example.json` (en la imagen, `node dist/src/cli/pilot-setup.js - < piloto.json`).
+  Crea compañía, negocio y sede en Axeda, guarda la ubicación y el horario, carga festivos e invita a
+  las personas. Se puede repetir sin duplicar nada; `--solo-enlaces` imprime los enlaces sin mandar
+  SMS y `--reenviar` manda de nuevo las invitaciones vigentes.
+- Prueba manual en Windows: `scripts/prueba-piloto.ps1` (con `-Docker`, también construye la imagen).
+
 ### Cookies
 
 Better Auth usa cookies `HttpOnly` y `SameSite=Lax`, así que frontend y API deben estar en el mismo
@@ -257,6 +285,6 @@ desde un origen que no está en la lista reciben 403.
   (regla 11), descansos por cuadrilla, notificaciones push (saldrán de los avisos de ADR 0015).
 
 - WhatsApp con Meta como canal principal (Twilio queda de respaldo), cuando esté la cuenta aprobada.
-- Elegir proveedor de correo y conectarlo en `src/auth/messaging.ts`.
+- Contadores de intentos en la base, para poder correr más de una instancia.
 - Reglas del encargado que Axeda deja a Tempora: duración máxima, misma sede, avisar al administrador.
 - Pantalla de aceptación de invitaciones en el frontend (`/invitacion?token=...`).
