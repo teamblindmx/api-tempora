@@ -44,6 +44,8 @@ export default async function setup(project: TestProject) {
     BETTER_AUTH_URL: 'http://localhost:3000',
     TRUSTED_ORIGINS: 'http://localhost:5173',
     COOKIE_DOMAIN: '',
+    // Las pruebas simulan clientes distintos con X-Forwarded-For (helpers.createUser).
+    TRUST_PROXY: 'true',
     DB_POOL_MAX: '4',
     AUTH_POOL_MAX: '4',
   };

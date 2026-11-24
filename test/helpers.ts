@@ -10,8 +10,9 @@ import { type AppConfig, loadConfig } from '../src/config/config.js';
 
 export const FRONTEND = 'http://localhost:5173';
 
-export function testConfig(): AppConfig {
-  return loadConfig(inject('env'));
+/** Configuración de las pruebas; `overrides` cambia variables para una app en particular. */
+export function testConfig(overrides: Record<string, string> = {}): AppConfig {
+  return loadConfig({ ...inject('env'), ...overrides });
 }
 
 /** Consulta directa con un rol de la base (para revisar el catálogo y los permisos). */
@@ -58,10 +59,10 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
-export async function startApp(): Promise<TestApp> {
+export async function startApp(overrides: Record<string, string> = {}): Promise<TestApp> {
   const outbox = new Map<string, string>();
   const sms = new Map<string, string>();
-  const { app, auth, openapi } = await createApp(testConfig(), {
+  const { app, auth, openapi } = await createApp(testConfig(overrides), {
     mailer: {
       async sendVerificationEmail(to, url) {
         outbox.set(to, url);

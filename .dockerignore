@@ -1,0 +1,24 @@
+# Lo que no entra al contexto de docker build: dependencias y compilados locales (se rehacen
+# dentro), secretos, pruebas y archivos del equipo.
+node_modules
+dist
+dist-cli
+generated
+coverage
+.git
+.github
+.env
+.env.*
+!.env.example
+*.xlsx
+*.log
+test
+docs
+scripts
+docker
+.agents
+.claude
+.windsurf
+.vscode
+.idea
+skills-lock.json

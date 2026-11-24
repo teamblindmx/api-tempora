@@ -6,6 +6,7 @@ import { toNodeHandler } from 'better-auth/node';
 import { cleanupOpenApiDoc } from 'nestjs-zod';
 import { AppModule } from './app.module.js';
 import { createAuth, type Messaging } from './auth/auth.js';
+import { clientIpMiddleware } from './common/client-ip.js';
 import type { AppConfig } from './config/config.js';
 
 export const AUTH_BASE_PATH = '/api/auth';
@@ -19,6 +20,9 @@ export async function createApp(config: AppConfig, messaging: Messaging = {}) {
   });
   const express = app.getHttpAdapter().getInstance();
   express.disable('x-powered-by');
+  // La IP del cliente sale del socket o, si hay proxies de confianza, de X-Forwarded-For (ADR 0016).
+  express.set('trust proxy', config.TRUST_PROXY);
+  express.use(clientIpMiddleware);
   express.all(`${AUTH_BASE_PATH}/{*any}`, toNodeHandler(auth.auth));
   app.useBodyParser('json', { limit: '100kb' });
   app.enableShutdownHooks();

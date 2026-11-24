@@ -55,3 +55,15 @@ jobs:
           psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/postgres/02-database.sql
       - name: Pruebas de aislamiento (PostgreSQL real)
         run: npm run test:e2e
+
+ image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir la imagen
+        run: docker build -t tempora-api:ci .
+      - name: La imagen arranca y corre como usuario sin privilegios
+        run: |
+          test "$(docker run --rm --entrypoint id tempora-api:ci -un)" = node
+          docker run --rm --entrypoint node tempora-api:ci -e "import('./dist/src/cli/pilot.js').then(() => console.log('ok'))"
