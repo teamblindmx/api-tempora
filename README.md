@@ -52,7 +52,7 @@ src/
 prisma/              Esquema y migraciones (las de RLS se escriben a mano).
 docker/postgres/     Roles y base para desarrollo y CI.
 test/                Pruebas de aislamiento contra PostgreSQL.
-docs/adr/            Decisiones (0009 a 0014).
+docs/adr/            Decisiones (0009 a 0015).
 ```
 
 Compañías, negocios, sedes y usuarios viven en Axeda (esquema `auth`); el frontend los administra con
@@ -216,6 +216,32 @@ WhatsApp (Meta) esté listo se agrega primero en `src/auth/sms/from-config.ts` y
   columnas.
 - Prueba manual en Windows: `scripts/prueba-jornada.ps1`.
 
+### Jornada: corrección de horas, revisión y avisos al líder (ADR 0015)
+
+| Ruta                                                 | Permiso              | Qué hace                                                             |
+| ---------------------------------------------------- | -------------------- | -------------------------------------------------------------------- |
+| `GET /sites/:siteId/attendance/review?from=&to=`     | `attendance:read`    | Jornadas con motivos sin revisar (último mes por omisión)            |
+| `GET /sites/:siteId/attendance/records/:id`          | `attendance:read`    | Una jornada con la persona y su historial de correcciones            |
+| `POST /sites/:siteId/attendance/records/:id/correct` | `attendance:correct` | Corrige `{ checkInAt?, checkOutAt?, comment }`                       |
+| `POST /sites/:siteId/attendance/records/:id/review`  | `attendance:correct` | Marca como revisados sus motivos (`comment` opcional)                |
+| `GET /sites/:siteId/notices?status=`                 | `attendance:read`    | Avisos de la sede: pendientes (`open`, por omisión) o `all` del mes  |
+| `POST /sites/:siteId/notices/:id/read`               | `attendance:read`    | "Ya lo vi": lo quita de pendientes para todos los líderes de la sede |
+
+- **Corregir**: hasta 31 días atrás, en el mismo día de jornada, nunca en el futuro ni la propia. Solo
+  se corrige una salida que existe (si falta, `manual/check-out`). Con la hora nueva se recalculan el
+  retardo, el tipo de salida y "fuera de horario". Cada corrección queda en `attendance_correction`
+  con el valor anterior y el nuevo. Errores: `TEMPORA_CORRECTION_INVALID`, `TEMPORA_CORRECTION_SELF`,
+  `TEMPORA_RECORD_NOT_FOUND`, `TEMPORA_RECORD_CHANGED`.
+- **Revisar**: los motivos (`reviewReasons`) se conservan; los revisados van en `reviewedReasons`.
+  `needsReview` es true si queda alguno sin revisar, así que un motivo nuevo (por ejemplo, la salida
+  fuera del radio) vuelve a pedir revisión. Errores: `TEMPORA_NOTHING_TO_REVIEW`, `TEMPORA_REVIEW_SELF`.
+- **Avisos**: se crean solos con una entrada o salida por revisar (`attendance-review`, uno pendiente
+  por jornada) y con cada justificación (`justification`). Se atienden solos al revisar o resolver.
+  Son de la sede, no de una persona. Las notificaciones push saldrán de aquí (después del 1 de enero).
+- El encargado ve la lista, el detalle y los avisos, pero no corrige ni revisa.
+- Excel: "Por revisar" trae solo lo pendiente; columnas nuevas "Revisado" y "Corregida".
+- Prueba manual en Windows: `scripts/prueba-correcciones.ps1`.
+
 ### Cookies
 
 Better Auth usa cookies `HttpOnly` y `SameSite=Lax`, así que frontend y API deben estar en el mismo
@@ -225,10 +251,10 @@ desde un origen que no está en la lista reciben 403.
 
 ## Pendiente
 
-- Jornada: corregir la hora de un marcado ya registrado (`attendance:correct`), marcar como revisada
-  una jornada "por revisar", y avisos al líder.
+- Jornada: cambio de sede del trabajador con historial y aviso al líder (regla 14), cuando se defina
+  cómo se asignan sedes en Axeda.
 - Después del 1 de enero: horas extra dobles y triples, disputa de justificaciones con RH, comisiones
-  (regla 11), descansos por cuadrilla.
+  (regla 11), descansos por cuadrilla, notificaciones push (saldrán de los avisos de ADR 0015).
 
 - WhatsApp con Meta como canal principal (Twilio queda de respaldo), cuando esté la cuenta aprobada.
 - Elegir proveedor de correo y conectarlo en `src/auth/messaging.ts`.

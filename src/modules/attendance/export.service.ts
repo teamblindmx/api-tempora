@@ -12,6 +12,7 @@ import { ATTENDANCE_ERRORS, type AttendanceRecord } from './attendance.schemas.j
 import { PeopleDirectory } from './people.js';
 import { daysInRange, EXPORT_MAX_DAYS } from './rules/panel.js';
 import { localDate, wallClock } from './rules/workday.js';
+import { pendingReview } from './rules/review.js';
 
 export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -194,11 +195,14 @@ export class ExportService {
       'Salida registrada por',
       'Comentario del líder',
       'Por revisar',
+      'Revisado',
+      'Corregida',
       'Justificaciones',
       'Id de usuario',
     ].map(bold);
     const data: SheetData = [header];
     for (const { record: r, ...row } of rows) {
+      const label = (x: string) => REVIEW_LABEL[x] ?? x;
       const comments = [
         r.checkInComment && `Entrada: ${r.checkInComment}`,
         r.checkOutComment && `Salida: ${r.checkOutComment}`,
@@ -233,7 +237,12 @@ export class ExportService {
         SOURCE_LABEL[r.checkInSource],
         r.checkOutSource ? SOURCE_LABEL[r.checkOutSource] : '',
         comments.join(' · '),
-        r.reviewReasons.map((x) => REVIEW_LABEL[x] ?? x).join(', '),
+        // Lo pendiente; lo ya revisado va aparte, con el comentario del líder (ADR 0015).
+        pendingReview(r.reviewReasons, r.reviewedReasons).map(label).join(', '),
+        [r.reviewedReasons.map(label).join(', '), r.reviewComment].filter(Boolean).join(' · '),
+        r.correctedAt
+          ? { value: wallClock(new Date(r.correctedAt), row.timezone), format: 'dd/mm/yyyy hh:mm' }
+          : null,
         row.justifications,
         r.userId,
       ]);
@@ -308,6 +317,6 @@ export class ExportService {
 }
 
 const DETAIL_WIDTHS = [
-  18, 28, 16, 28, 12, 22, 9, 17, 17, 8, 9, 14, 14, 12, 14, 16, 14, 30, 20, 20, 40, 30, 30, 28,
+  18, 28, 16, 28, 12, 22, 9, 17, 17, 8, 9, 14, 14, 12, 14, 16, 14, 30, 20, 20, 40, 30, 30, 17, 30, 28,
 ];
 const SUMMARY_WIDTHS = [18, 28, 16, 10, 18, 18, 20, 26, 10, 14, 14, 12, 12, 12, 28];

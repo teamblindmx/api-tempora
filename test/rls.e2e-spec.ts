@@ -496,3 +496,144 @@ describe('Semanas 5 y 6: festivos, justificaciones, horas extra y aviso de priva
     );
   });
 });
+
+describe('Semana 7: correcciones y avisos', () => {
+  const now = new Date('2026-12-11T14:00:00Z');
+  const day = new Date('2026-12-11T00:00:00Z');
+  const rec: Record<string, string> = {};
+
+  const correction = (c: string, data: object = {}) =>
+    withCompany(db, c, (tx) =>
+      tx.attendanceCorrection.create({
+        data: {
+          companyId: c,
+          siteId: ids[c]!,
+          attendanceRecordId: rec[c]!,
+          userId: 'w1',
+          correctedBy: 'lider',
+          correctedAt: now,
+          checkInBefore: now,
+          checkInAfter: new Date('2026-12-11T13:55:00Z'),
+          comment: 'Llegó antes, marcó tarde',
+          ...data,
+        },
+      }),
+    );
+
+  beforeAll(async () => {
+    for (const c of [A, B]) {
+      const r = await withCompany(db, c, (tx) =>
+        tx.attendanceRecord.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            userId: 'w1',
+            workDate: day,
+            checkInAt: now,
+            checkInSource: 'manual',
+            checkInBy: 'lider',
+            checkInComment: 'Prueba de aislamiento',
+            reviewReasons: ['entry:no-location'],
+          },
+        }),
+      );
+      rec[c] = r.id;
+      await correction(c);
+      await withCompany(db, c, (tx) =>
+        tx.notice.create({
+          data: {
+            companyId: c,
+            siteId: ids[c]!,
+            kind: 'attendance-review',
+            userId: 'w1',
+            workDate: day,
+            attendanceRecordId: r.id,
+            detail: ['entry:no-location'],
+            createdAt: now,
+          },
+        }),
+      );
+    }
+  });
+
+  it('cada compañía ve solo sus correcciones y avisos', async () => {
+    for (const c of [A, B]) {
+      const [corrections, notices] = await withCompany(db, c, (tx) =>
+        Promise.all([tx.attendanceCorrection.findMany(), tx.notice.findMany()]),
+      );
+      expect(corrections.map((x) => x.companyId)).toEqual([c]);
+      expect(notices.map((x) => x.companyId)).toEqual([c]);
+    }
+    expect(
+      await withCompany(db, A, (tx) =>
+        tx.notice.updateMany({ where: { companyId: B }, data: { detail: [] } }),
+      ),
+    ).toEqual({ count: 0 });
+  });
+
+  it('una corrección o un aviso de A no apuntan a la jornada de B (FK compuesta)', async () => {
+    await expect(correction(A, { attendanceRecordId: rec[B]! })).rejects.toThrow(/Foreign key constraint/i);
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.notice.create({
+          data: {
+            companyId: A,
+            siteId: ids[A]!,
+            kind: 'attendance-review',
+            userId: 'w2',
+            workDate: day,
+            attendanceRecordId: rec[B]!,
+            createdAt: now,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/Foreign key constraint/i);
+  });
+
+  it('el historial de correcciones es de solo inserción; los avisos no se borran', async () => {
+    await expect(
+      withCompany(db, A, (tx) => tx.attendanceCorrection.updateMany({ data: { comment: 'Otra cosa' } })),
+    ).rejects.toThrow(/permission denied/);
+    await expect(withCompany(db, A, (tx) => tx.attendanceCorrection.deleteMany({}))).rejects.toThrow(
+      /permission denied/,
+    );
+    await expect(withCompany(db, A, (tx) => tx.notice.deleteMany({}))).rejects.toThrow(/permission denied/);
+  });
+
+  it('la base impide corregirse o revisarse a uno mismo, correcciones vacías y revisar motivos que no hay', async () => {
+    await expect(correction(A, { correctedBy: 'w1' })).rejects.toThrow(/correction_not_self/);
+    await expect(correction(A, { checkInAfter: now })).rejects.toThrow(/correction_changes/);
+    await expect(
+      correction(A, { checkOutBefore: null, checkOutAfter: new Date('2026-12-11T23:00:00Z') }),
+    ).rejects.toThrow(/correction_exit_exists/);
+    const update = (data: object) =>
+      withCompany(db, A, (tx) => tx.attendanceRecord.update({ where: { id: rec[A]! }, data }));
+    await expect(
+      update({ reviewedReasons: ['entry:no-location'], reviewedAt: now, reviewedBy: 'w1' }),
+    ).rejects.toThrow(/attendance_review_correct_not_self/);
+    await expect(
+      update({ reviewedReasons: ['exit:off-schedule'], reviewedAt: now, reviewedBy: 'lider' }),
+    ).rejects.toThrow(/attendance_reviewed/);
+    await expect(update({ correctedAt: now, correctedBy: 'w1' })).rejects.toThrow(
+      /attendance_review_correct_not_self/,
+    );
+  });
+
+  it('a lo más un aviso pendiente por jornada', async () => {
+    await expect(
+      withCompany(db, A, (tx) =>
+        tx.notice.create({
+          data: {
+            companyId: A,
+            siteId: ids[A]!,
+            kind: 'attendance-review',
+            userId: 'w1',
+            workDate: day,
+            attendanceRecordId: rec[A]!,
+            createdAt: now,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/Unique constraint/i);
+  });
+});

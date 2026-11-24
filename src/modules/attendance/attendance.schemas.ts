@@ -43,6 +43,16 @@ export const ATTENDANCE_ERRORS = {
   justificationSelf: 'TEMPORA_JUSTIFICATION_SELF',
   holidayExists: 'TEMPORA_HOLIDAY_EXISTS',
   holidayNotFound: 'TEMPORA_HOLIDAY_NOT_FOUND',
+  /** Semana 7: correcciones, revisión y avisos (ADR 0015). */
+  recordNotFound: 'TEMPORA_RECORD_NOT_FOUND',
+  /** Nadie corrige ni revisa su propia jornada. */
+  correctionSelf: 'TEMPORA_CORRECTION_SELF',
+  reviewSelf: 'TEMPORA_REVIEW_SELF',
+  correctionInvalid: 'TEMPORA_CORRECTION_INVALID',
+  /** La jornada cambió mientras se corregía o revisaba: hay que volver a cargarla. */
+  recordChanged: 'TEMPORA_RECORD_CHANGED',
+  nothingToReview: 'TEMPORA_NOTHING_TO_REVIEW',
+  noticeNotFound: 'TEMPORA_NOTICE_NOT_FOUND',
 } as const;
 
 /** Ubicación del teléfono al marcar. Se lee solo en ese momento (regla 5). */
@@ -165,8 +175,18 @@ export const AttendanceRecordSchema = z.object({
   checkOutComment: z.string().nullable(),
   /** Minutos entre entrada y salida; null sin salida. */
   workedMinutes: z.number().int().nullable(),
+  /** Hay algún motivo de revisión que el líder aún no revisa. */
   needsReview: z.boolean(),
+  /** Todos los motivos, revisados o no (son evidencia: no se borran). */
   reviewReasons: z.array(z.string()),
+  /** Los que ya revisó el líder; los demás siguen pendientes. */
+  reviewedReasons: z.array(z.string()),
+  reviewedAt: z.iso.datetime().nullable(),
+  reviewedBy: z.string().nullable(),
+  reviewComment: z.string().nullable(),
+  /** Última corrección de horas (el historial está en GET .../records/:id). */
+  correctedAt: z.iso.datetime().nullable(),
+  correctedBy: z.string().nullable(),
   /** Null si la sede no tiene horario (sin cierre oficial no hay horas extra). */
   overtime: OvertimeSchema.nullable(),
 });
@@ -433,4 +453,111 @@ export class StatutoryHolidaysDto extends createZodDto(
 ) {}
 export class HolidayQueryDto extends createZodDto(
   z.object({ year: z.coerce.number().int().min(2000).max(2100).optional() }),
+) {}
+
+// ---------------------------------------------------------------------------------------------
+// Semana 7: corrección de horas, revisión de jornadas y avisos al líder (ADR 0015).
+
+export class CorrectRecordDto extends createZodDto(
+  z
+    .object({
+      /** Nueva hora de entrada, del mismo día de jornada. Sin ella, no cambia. */
+      checkInAt: z.iso.datetime({ offset: true }).nullable().default(null),
+      /** Nueva hora de salida (solo si ya tiene salida; si no, es marcado manual). Sin ella, no cambia. */
+      checkOutAt: z.iso.datetime({ offset: true }).nullable().default(null),
+      /** Por qué se corrige (regla 13). */
+      comment: Comment,
+    })
+    .refine((b) => b.checkInAt !== null || b.checkOutAt !== null, {
+      message: 'Indica la hora de entrada o de salida que corriges',
+      path: ['checkInAt'],
+    }),
+) {}
+
+export class ReviewRecordDto extends createZodDto(
+  z.object({
+    /** Qué se revisó (por ejemplo, "Estaba en la nave 2, fuera del radio"). Opcional. */
+    comment: z.string().trim().min(1).max(500).nullable().default(null),
+  }),
+) {}
+
+export const CorrectionSchema = z.object({
+  id: z.string(),
+  correctedBy: z.string(),
+  correctedAt: z.iso.datetime(),
+  checkInBefore: z.iso.datetime(),
+  checkInAfter: z.iso.datetime(),
+  checkOutBefore: z.iso.datetime().nullable(),
+  checkOutAfter: z.iso.datetime().nullable(),
+  comment: z.string(),
+});
+
+export class RecordDetailDto extends createZodDto(
+  z.object({
+    person: PersonSchema,
+    record: AttendanceRecordSchema,
+    /** Historial de correcciones, de la más vieja a la más reciente. */
+    corrections: z.array(CorrectionSchema),
+  }),
+) {}
+
+export class ReviewQueryDto extends createZodDto(
+  z.object({
+    /** Rango de días de jornada; por omisión, los últimos 31 días. */
+    from: DateString.optional(),
+    to: DateString.optional(),
+  }),
+) {}
+
+export class ReviewQueueDto extends createZodDto(
+  z.object({
+    siteId: z.string(),
+    from: z.string(),
+    to: z.string(),
+    /** Jornadas con motivos sin revisar, de la más vieja a la más reciente. */
+    items: z.array(
+      z.object({
+        person: PersonSchema,
+        /** Los motivos que faltan por revisar. */
+        pendingReasons: z.array(z.string()),
+        record: AttendanceRecordSchema,
+      }),
+    ),
+  }),
+) {}
+
+export const NoticeSchema = z.object({
+  id: z.string(),
+  siteId: z.string(),
+  /** attendance-review: una jornada quedó por revisar; justification: llegó una justificación. */
+  kind: z.enum(['attendance-review', 'justification']),
+  person: PersonSchema,
+  workDate: z.string(),
+  attendanceRecordId: z.string().nullable(),
+  justificationId: z.string().nullable(),
+  /** Motivos de revisión pendientes, o el tipo de justificación (late, early-exit, absence). */
+  detail: z.array(z.string()),
+  createdAt: z.iso.datetime(),
+  /** Última vez que cambió (una salida puede agregar motivos al mismo aviso). */
+  updatedAt: z.iso.datetime(),
+  /** Null mientras esté pendiente. */
+  readAt: z.iso.datetime().nullable(),
+  readBy: z.string().nullable(),
+});
+export class NoticeDto extends createZodDto(NoticeSchema) {}
+
+export class NoticeQueryDto extends createZodDto(
+  z.object({
+    /** open: pendientes (por omisión); all: también los atendidos de los últimos 31 días. */
+    status: z.enum(['open', 'all']).default('open'),
+  }),
+) {}
+
+export class NoticeListDto extends createZodDto(
+  z.object({
+    /** Cuántos siguen pendientes en la sede. */
+    open: z.number().int(),
+    /** Los más recientes primero, hasta 200. */
+    items: z.array(NoticeSchema),
+  }),
 ) {}

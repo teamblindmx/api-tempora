@@ -1,6 +1,6 @@
 # ADR 0014: Retardos, justificaciones, horas extra, festivos y aviso de privacidad
 
-- Estado: propuesta
+- Estado: aceptada (valores por omisión confirmados por Noel el 2026-11-23)
 - Fecha: 2026-11-18
 
 ## Contexto
@@ -65,6 +65,6 @@ datos personales del que las usa). Cambiar la versión pide aceptar de nuevo.
   valor por omisión.
 - El frontend debe mostrar el aviso al primer ingreso (y al cambiar de versión) y ofrecer "Registrar
   entrada tardía" cuando la entrada responde `TEMPORA_CODE_EXPIRED`.
-- Pendiente de decidir con Noel: tolerancia de 10 o 15; si el domingo es el descanso de todas las
-  sedes; si el encargado debe poder autorizar horas extra o resolver justificaciones; si una
-  justificación rechazada puede reenviarse antes de que exista la disputa.
+- Confirmado por Noel el 2026-11-23: tolerancia de 10 minutos; domingo como descanso por omisión en
+  todas las sedes; el encargado no autoriza horas extra ni resuelve justificaciones; una
+  justificación rechazada no se puede reenviar (hasta que exista la disputa con RH).

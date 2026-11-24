@@ -8,6 +8,7 @@ import type { RequestContext } from '../../tenancy/request-context.js';
 import { AuditService } from '../audit/audit.service.js';
 import { fail, fromDate, siteOrFail, toDate } from './attendance.records.js';
 import { ATTENDANCE_ERRORS } from './attendance.schemas.js';
+import { NoticeService } from './notices.service.js';
 import { type Person, PeopleDirectory } from './people.js';
 import {
   asKind,
@@ -59,6 +60,7 @@ export class JustificationService {
   constructor(
     private readonly db: TenantDb,
     private readonly audit: AuditService,
+    private readonly notices: NoticeService,
     private readonly people: PeopleDirectory,
     private readonly cls: ClsService<RequestContext>,
     private readonly clock: Clock,
@@ -125,6 +127,7 @@ export class JustificationService {
           after: { siteId, userId: actorId, workDate: input.workDate, kind: input.kind },
           reason: input.reason,
         });
+        await this.notices.justificationSubmitted(tx, j);
         return toDto(j);
       });
     } catch (e) {
@@ -218,6 +221,7 @@ export class JustificationService {
         after: { status: decision, userId: j.userId, workDate: fromDate(j.workDate), kind: j.kind },
         ...(comment ? { reason: comment } : {}),
       });
+      await this.notices.justificationResolved(tx, companyId, id, now, actorId);
       return toDto({ ...j, ...data });
     });
   }

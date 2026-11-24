@@ -28,6 +28,7 @@ import {
   MyAttendanceDto,
 } from './attendance.schemas.js';
 import { AttendanceService, toCodeDto } from './attendance.service.js';
+import { CorrectionService } from './corrections.service.js';
 import { ExportService } from './export.service.js';
 import { HolidaysService } from './holidays.service.js';
 import { JustificationService } from './justification.service.js';
@@ -35,6 +36,8 @@ import { LEADER_CONTROLLERS } from './leader.controllers.js';
 import { LeaderService } from './leader.service.js';
 import { OvertimeService } from './overtime.service.js';
 import { PeopleDirectory } from './people.js';
+import { NoticeService } from './notices.service.js';
+import { REVIEW_CONTROLLERS } from './review.controllers.js';
 import { RULES_CONTROLLERS } from './rules.controllers.js';
 
 /** Intentos de entrada por usuario y minuto. */
@@ -129,7 +132,8 @@ class AttendanceController {
 /**
  * Jornada: código diario, entrada con ubicación y salida (semana 2); panel del líder, marcado
  * manual, calendario y exportación a Excel (semana 3); retardos, entrada tardía, justificaciones,
- * horas extra, festivos y descansos (semanas 5 y 6). Las reglas viven en ./rules como funciones puras.
+ * horas extra, festivos y descansos (semanas 5 y 6); corrección de horas, revisión y avisos al líder
+ * (semana 7). Las reglas viven en ./rules como funciones puras.
  */
 @Module({
   imports: [
@@ -137,7 +141,13 @@ class AttendanceController {
     PrivacyModule,
     ThrottlerModule.forRoot([{ name: 'check-in', limit: CHECK_IN_LIMIT, ttl: 60_000 }]),
   ],
-  controllers: [DailyCodeController, AttendanceController, ...LEADER_CONTROLLERS, ...RULES_CONTROLLERS],
+  controllers: [
+    DailyCodeController,
+    AttendanceController,
+    ...LEADER_CONTROLLERS,
+    ...RULES_CONTROLLERS,
+    ...REVIEW_CONTROLLERS,
+  ],
   providers: [
     AttendanceService,
     LeaderService,
@@ -145,6 +155,8 @@ class AttendanceController {
     OvertimeService,
     JustificationService,
     HolidaysService,
+    CorrectionService,
+    NoticeService,
     PeopleDirectory,
     PerUserThrottlerGuard,
   ],
